@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createEarthTexture, createMetalHazardTexture } from './textures';
+import { buildPodcastStudioRoom, PodcastStudioRoomHandle } from './podcastStudioRoom';
 
 export interface MissionRoomHandle {
   id: 1 | 2 | 3 | 4 | 5;
@@ -9,6 +10,10 @@ export interface MissionRoomHandle {
   bgColor: number;
   fogColor: number;
   animate: (elapsed: number, dt: number, restored: boolean) => void;
+  setAvatarId?: PodcastStudioRoomHandle['setAvatarId'];
+  resetIntro?: PodcastStudioRoomHandle['resetIntro'];
+  skipIntro?: PodcastStudioRoomHandle['skipIntro'];
+  updateIntroCamera?: PodcastStudioRoomHandle['updateIntroCamera'];
   dispose: () => void;
 }
 
@@ -841,143 +846,9 @@ export function buildMissionRoom(
     };
   } else {
     // =========================================================================
-    // MISSION ROOM 05: ECO WORLD MEDIA COMMAND CENTER (FINAL MISSION)
+    // MISSION ROOM 05: FUTURISTIC LIVE PODCAST & RADIO BROADCAST STUDIO
     // =========================================================================
-    bgColor = 0x051a2e;
-    fogColor = 0x051a2e;
-    cameraPos = [0, 5.4, 12.0];
-    cameraTarget = [0, 2.5, -1.4];
-
-    group.add(buildRoomShell(22, 16, 0x0b1629, 0xfacc15));
-
-    const goldSpot = new THREE.PointLight(0xfacc15, 24, 26);
-    goldSpot.position.set(0, 6.2, 1);
-    const ecoSpot = new THREE.PointLight(0x10b981, 22, 26);
-    ecoSpot.position.set(0, 4.0, -4);
-    group.add(goldSpot, ecoSpot);
-
-    // Panoramic Restored Futuristic Green Eco-City Skyline behind
-    const greenGlass = new THREE.Mesh(
-      new THREE.PlaneGeometry(18.0, 5.8),
-      new THREE.MeshPhysicalMaterial({
-        color: 0x38bdf8,
-        transparent: true,
-        opacity: 0.14,
-        roughness: 0.08,
-        depthWrite: false,
-      })
-    );
-    greenGlass.position.set(0, 4.2, -7.4);
-    group.add(greenGlass);
-
-    const ecoCityMat = new THREE.MeshStandardMaterial({
-      color: 0xe2e8f0,
-      emissive: 0x059669,
-      emissiveIntensity: 0.25,
-      metalness: 0.45,
-      roughness: 0.25,
-    });
-    [
-      [-7.2, 4.2, -14.2, 2.2, 8.4],
-      [-3.4, 5.4, -15.0, 2.4, 10.8],
-      [3.4, 5.0, -15.0, 2.4, 10.0],
-      [7.2, 3.9, -14.2, 2.2, 7.8],
-    ].forEach(([x, y, z, w, h]) => {
-      const tower = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), ecoCityMat);
-      tower.position.set(x, y, z);
-      group.add(tower);
-      const greenCap = new THREE.Mesh(
-        new THREE.ConeGeometry(w * 0.65, 1.3, 4),
-        new THREE.MeshStandardMaterial({ color: 0x10b981, emissive: 0x059669, emissiveIntensity: 0.5 })
-      );
-      greenCap.position.set(x, y + h / 2 + 0.65, z);
-      greenCap.rotation.y = Math.PI / 4;
-      group.add(greenCap);
-    });
-
-    // Broadcasting Stage & Central Pedestal
-    const stage = new THREE.Mesh(
-      new THREE.CylinderGeometry(3.6, 4.1, 0.6, 36),
-      new THREE.MeshStandardMaterial({ color: 0x0f172a, metalness: 0.7, roughness: 0.25 })
-    );
-    stage.position.set(0, 0.3, -0.6);
-    group.add(stage);
-
-    // Giant Floating Holographic Earth
-    const earth = new THREE.Mesh(
-      new THREE.SphereGeometry(1.75, 32, 32),
-      new THREE.MeshStandardMaterial({
-        map: earthTex,
-        emissive: 0x0284c7,
-        emissiveIntensity: 0.35,
-        roughness: 0.28,
-      })
-    );
-    earth.position.set(0, 3.35, -0.6);
-    group.add(earth);
-
-    const ringGold = new THREE.Mesh(
-      new THREE.TorusGeometry(2.45, 0.09, 14, 48),
-      new THREE.MeshStandardMaterial({
-        color: 0xfacc15,
-        emissive: 0xeab308,
-        emissiveIntensity: 0.75,
-        metalness: 0.9,
-      })
-    );
-    ringGold.position.set(0, 3.35, -0.6);
-    ringGold.rotation.x = Math.PI / 3;
-    group.add(ringGold);
-
-    const ringCyan = new THREE.Mesh(
-      new THREE.TorusGeometry(2.85, 0.06, 12, 48),
-      new THREE.MeshStandardMaterial({
-        color: 0x38bdf8,
-        emissive: 0x0ea5e9,
-        emissiveIntensity: 0.8,
-      })
-    );
-    ringCyan.position.set(0, 3.35, -0.6);
-    ringCyan.rotation.y = Math.PI / 3;
-    group.add(ringCyan);
-
-    // Flanking Video Production & Audio Editing Screens
-    const videoScreen = buildHoloScreen(
-      'STUDIO PRODUKSI VIDEO',
-      ['1. PERANCANGAN KEMPEN', '2. PENYEDIAAN HUJAH', '3. SUNTINGAN VISUAL'],
-      '#10b981',
-      4.1,
-      2.5,
-      maxAnisotropy
-    );
-    videoScreen.position.set(-5.6, 3.6, -2.4);
-    videoScreen.rotation.y = 0.5;
-
-    const audioScreen = buildHoloScreen(
-      'PUSAT SIARAN ECOWORLD',
-      ['4. PENGHANTARAN PROJEK', '5. PEMBENTANGAN & REFLEKSI', 'SUARAKAN PERUBAHAN!'],
-      '#facc15',
-      4.1,
-      2.5,
-      maxAnisotropy
-    );
-    audioScreen.position.set(5.6, 3.6, -2.4);
-    audioScreen.rotation.y = -0.5;
-    group.add(videoScreen, audioScreen);
-
-    const portal = buildEntrancePortal(0xfacc15);
-    portal.group.position.set(-7.6, 0, 3.8);
-    portal.group.rotation.y = 0.75;
-    group.add(portal.group);
-
-    animateFn = (elapsed, dt) => {
-      earth.rotation.y += dt * 0.45;
-      ringGold.rotation.z += dt * 0.7;
-      ringCyan.rotation.x -= dt * 0.55;
-      videoScreen.position.y = 3.6 + Math.sin(elapsed * 1.9) * 0.14;
-      audioScreen.position.y = 3.6 + Math.sin(elapsed * 1.9 + 1.1) * 0.14;
-      portal.ring.rotation.z += dt * 1.2;
-    };
+    return buildPodcastStudioRoom(maxAnisotropy);
   }
 
   return {

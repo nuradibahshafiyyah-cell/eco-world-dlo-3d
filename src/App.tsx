@@ -14,7 +14,6 @@ import {
 } from 'lucide-react';
 import { AdminDashboard } from './components/AdminDashboard';
 import { DskpObjectivesView } from './components/DskpObjectivesView';
-import { IntroVideoCutscene } from './components/IntroVideoCutscene';
 import { LoginPortal } from './components/LoginPortal';
 import { Mission1FlightAdventure } from './components/Mission1FlightAdventure';
 import { Mission2OperationAdventure } from './components/Mission2OperationAdventure';
@@ -79,7 +78,6 @@ function getSequentialUnlockedLimit(user: UserAccount | null): number {
 export default function App() {
   const [db, setDb] = useState<DatabaseState>(() => getDB());
   const [showSplash, setShowSplash] = useState(true);
-  const [showIntroVideo, setShowIntroVideo] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // 3D Viewport Navigation & Camera State
@@ -90,6 +88,11 @@ export default function App() {
   const [travelPhase, setTravelPhase] = useState<'walking' | 'activating' | null>(null);
   const [teleportOutMissionId, setTeleportOutMissionId] = useState<number | null>(null);
   const [m2TeleportEntry, setM2TeleportEntry] = useState(false);
+  const [m5IntroState, setM5IntroState] = useState<{
+    phase: 1 | 2 | 3 | 4 | 5;
+    done: boolean;
+  }>({ phase: 1, done: false });
+  const [m5SkipTrigger, setM5SkipTrigger] = useState(0);
   const m1RecordedThisRunRef = useRef(false);
   const [hoverInfo, setHoverInfo] = useState<string | null>(null);
   const [m1CluesFound, setM1CluesFound] = useState<string[]>([]);
@@ -125,6 +128,12 @@ export default function App() {
   } | null>(null);
 
   const [toastMsg, setToastMsg] = useState<{ text: string; isError: boolean } | null>(null);
+
+  useEffect(() => {
+    if (activeMissionId === 5) {
+      setM5IntroState({ phase: 1, done: false });
+    }
+  }, [activeMissionId]);
 
   const currentUser: UserAccount | null =
     db.users.find((u) => u.id === currentUserId) || null;
@@ -203,14 +212,7 @@ export default function App() {
 
   const handleStartFromSplash = () => {
     unlockAudioOnUserGesture();
-    musicPanelRef.current?.stopImmediately();
     setShowSplash(false);
-    setShowIntroVideo(true);
-  };
-
-  const handleFinishIntroVideo = () => {
-    unlockAudioOnUserGesture();
-    setShowIntroVideo(false);
     musicPanelRef.current?.startFromUserAction();
   };
 
@@ -965,6 +967,8 @@ export default function App() {
         onCollectClue={handleCollectClue}
         onHoverInfo={setHoverInfo}
         onProximityZoneChange={setProximityZoneId}
+        onMission5IntroChange={setM5IntroState}
+        m5SkipTrigger={m5SkipTrigger}
       />
 
       {/* Top Navigation Bar */}
@@ -1099,18 +1103,12 @@ export default function App() {
       {/* Step 1: Static 16:9 Welcome Splash Screen with Single MULA Button */}
       {!currentUser && showSplash && <WelcomeSplash onStart={handleStartFromSplash} />}
 
-      {/* Step 1.5: Dramatic 30s Intro Video Cutscene with "Amaran! Bumi Dalam Bahaya!" */}
-      {!currentUser && !showSplash && showIntroVideo && (
-        <IntroVideoCutscene onComplete={handleFinishIntroVideo} />
-      )}
-
-      {/* Step 2: Role Access Portal (Admin, Guru, Murid) */}
-      {!currentUser && !showSplash && !showIntroVideo && (
+      {/* Step 2: Role Access Portal (Admin, Guru, Murid) directly after MULA */}
+      {!currentUser && !showSplash && (
         <LoginPortal
           classes={db.classes}
           students={db.users.filter((u) => u.role === 'murid')}
           onBackToSplash={() => {
-            setShowIntroVideo(false);
             setShowSplash(true);
           }}
           onOpenDskp={() => setShowDskp(true)}
@@ -1533,6 +1531,8 @@ export default function App() {
           onCompleteMission4={handleCompleteM4}
           onUpdateMission4Argument={handleUpdateM4Argument}
           onCompleteMission5={handleCompleteM5}
+          m5IntroState={m5IntroState}
+          onSkipM5Intro={() => setM5SkipTrigger((n) => n + 1)}
         />
       )}
 

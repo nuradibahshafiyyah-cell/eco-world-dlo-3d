@@ -1,12 +1,23 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   Award,
+  Camera,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Compass,
   Droplets,
+  Eye,
+  Footprints,
   Leaf,
+  MapPin,
   Megaphone,
   Mic,
   Music,
@@ -23,10 +34,18 @@ import {
   Users,
   Volume2,
   VolumeX,
+  X,
+  Zap,
 } from 'lucide-react';
 import { AVATARS } from '../data/gameData';
-import { animateHumanAgent, buildHumanEcoAgent } from '../three/humanAgents';
+import {
+  buildHutanHarapanWorld,
+  HutanHarapanWorldHandle,
+  InteractiveSpot,
+  ProposalKey,
+} from '../three/hutanHarapanWorld';
 import { MissionDef, UserAccount } from '../types/game';
+import { buildMalaysianTtsStyle, pickMalaysianSpeechVoice } from '../utils/malayVoice';
 import { playSFX, setMusicState } from '../utils/sound';
 
 export interface Mission3OperationAdventureProps {
@@ -46,7 +65,7 @@ export interface Mission3OperationAdventureProps {
 }
 
 type Mission3Stage = 'emergency_call' | 'explore' | 'decision' | 'victory';
-type ProposalId = 'A' | 'B' | 'C';
+type ProposalId = ProposalKey;
 type AudioPlayStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'ended' | 'blocked';
 
 interface ProposalDef {
@@ -113,28 +132,10 @@ const GUIDING_QUESTIONS = [
   '3. Mengapakah cadangan ini paling sesuai untuk menyelamatkan Hutan Harapan?',
 ];
 
-const MALE_VOICE_RE =
-  /osman|andika|ardi|farid|adam|david|mark|daniel|alex|fred|george|guy|ryan|\bmale\b|lelaki/i;
-const FEMALE_MS_RE = /yasmin|amira|siti|nur|ain|zura|puteri|rina|female|woman|girl|ms-my-x-ms[bc]/i;
-
-function pickMalaySpeechVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
-  const malayPool = voices.filter((v) => {
-    const lang = v.lang.toLowerCase();
-    return lang.startsWith('ms') || lang.startsWith('id');
-  });
-  if (malayPool.length === 0) return null;
-  const msVoice = malayPool.find((v) => v.lang.toLowerCase().startsWith('ms'));
-  if (msVoice) {
-    const expressive = malayPool.find(
-      (v) =>
-        v.lang.toLowerCase().startsWith('ms') &&
-        !MALE_VOICE_RE.test(v.name) &&
-        FEMALE_MS_RE.test(v.name)
-    );
-    return expressive || msVoice;
-  }
-  return malayPool[0];
-}
+// Pre-allocated Three.js helpers (zero allocations inside renderLoop)
+const _targetBgColor = new THREE.Color();
+const _targetFogColor = new THREE.Color();
+const _rayNdc = new THREE.Vector2();
 
 function formatSec(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -146,7 +147,7 @@ function formatSec(sec: number): string {
    CUSTOM FOREST STRATEGY ILLUSTRATIONS (COMPACT & EXPANDED SIZES)
    ============================================================================ */
 function ProposalIllustration({ id, large = false }: { id: ProposalId; large?: boolean }) {
-  const heightCls = large ? 'h-44 sm:h-52' : 'h-28';
+  const heightCls = large ? 'h-44 sm:h-52' : 'h-24';
 
   if (id === 'A') {
     return (
@@ -160,14 +161,11 @@ function ProposalIllustration({ id, large = false }: { id: ProposalId; large?: b
         <rect width="280" height="150" fill="url(#m3PropASky)" />
         <circle cx="48" cy="34" r="18" fill="#fde047" opacity="0.9" />
         <rect x="0" y="106" width="280" height="44" fill="#15803d" />
-        {/* Rich soil mound */}
         <ellipse cx="122" cy="116" rx="44" ry="14" fill="#78350f" />
-        {/* Young sapling with vibrant leaves */}
         <rect x="119" y="68" width="6" height="44" rx="3" fill="#4d7c0f" />
         <path d="M122 82 Q92 64 98 48 Q118 52 122 76 Z" fill="#4ade80" />
         <path d="M124 74 Q154 56 150 40 Q130 44 124 68 Z" fill="#22c55e" />
         <path d="M122 64 Q106 36 122 26 Q138 36 122 64 Z" fill="#86efac" />
-        {/* Blue watering can */}
         <rect x="184" y="76" width="38" height="28" rx="7" fill="#0284c7" />
         <path d="M184 84 L162 72 L160 79 L184 94 Z" fill="#38bdf8" />
         <path d="M222 80 C236 80, 236 100, 222 100" stroke="#38bdf8" strokeWidth="5" fill="none" />
@@ -188,20 +186,23 @@ function ProposalIllustration({ id, large = false }: { id: ProposalId; large?: b
           </linearGradient>
         </defs>
         <rect width="280" height="150" fill="url(#m3PropBSky)" />
-        {/* Background forest silhouettes */}
         <circle cx="48" cy="88" r="24" fill="#047857" />
         <circle cx="232" cy="84" r="26" fill="#047857" />
         <rect x="0" y="106" width="280" height="44" fill="#166534" />
-        {/* Trash bags collected neatly */}
         <ellipse cx="78" cy="112" rx="22" ry="18" fill="#1e293b" />
         <rect x="70" y="90" width="16" height="8" rx="3" fill="#334155" />
         <ellipse cx="122" cy="114" rx="18" ry="15" fill="#0ea5e9" />
         <rect x="115" y="95" width="14" height="7" rx="3" fill="#38bdf8" />
-        {/* Blue Recycling Bin */}
         <rect x="166" y="64" width="52" height="56" rx="8" fill="#2563eb" />
         <rect x="160" y="56" width="64" height="11" rx="4" fill="#60a5fa" />
         <circle cx="192" cy="92" r="13" fill="#eff6ff" opacity="0.92" />
-        <path d="M187 92 L192 85 L197 92 M186 95 L198 95" stroke="#2563eb" strokeWidth="2.5" fill="none" strokeLinecap="round" />
+        <path
+          d="M187 92 L192 85 L197 92 M186 95 L198 95"
+          stroke="#2563eb"
+          strokeWidth="2.5"
+          fill="none"
+          strokeLinecap="round"
+        />
       </svg>
     );
   }
@@ -216,26 +217,22 @@ function ProposalIllustration({ id, large = false }: { id: ProposalId; large?: b
       </defs>
       <rect width="280" height="150" fill="url(#m3PropCSky)" />
       <rect x="0" y="110" width="280" height="40" fill="#15803d" />
-      {/* Wooden Awareness Signboard + Open Book */}
       <rect x="134" y="92" width="12" height="36" fill="#78350f" />
       <rect x="78" y="28" width="124" height="72" rx="8" fill="#92400e" />
       <rect x="86" y="36" width="108" height="56" rx="5" fill="#fef3c7" />
-      {/* Green forest emblem inside awareness board */}
       <rect x="137" y="66" width="6" height="18" fill="#78350f" />
       <circle cx="140" cy="57" r="15" fill="#16a34a" />
       <circle cx="128" cy="63" r="10" fill="#22c55e" />
       <circle cx="152" cy="63" r="10" fill="#22c55e" />
-      {/* Open educational book in front */}
       <path d="M104 118 Q122 108 140 118 L140 132 Q122 122 104 132 Z" fill="#ffffff" />
       <path d="M176 118 Q158 108 140 118 L140 132 Q158 122 176 132 Z" fill="#e2e8f0" />
-      {/* Sunbeam */}
       <circle cx="44" cy="34" r="14" fill="#fde047" opacity="0.85" />
     </svg>
   );
 }
 
 /* ============================================================================
-   MAIN COMPONENT: ECO RESCUE: MISI 3 – HUTAN HARAPAN
+   MAIN COMPONENT: ECO RESCUE: MISI 3 – HUTAN HARAPAN (3D EXPLORATION WORLD)
    ============================================================================ */
 export function Mission3OperationAdventure({
   mission,
@@ -262,9 +259,15 @@ export function Mission3OperationAdventure({
   const silentTimerRef = useRef<number | null>(null);
   const emergencyAutoStartedRef = useRef(false);
 
-  // Stage 2: Explored proposals
+  // Stage 2: 3D Hutan Harapan Interactive Exploration & Explored Proposals
   const [activeProposalId, setActiveProposalId] = useState<ProposalId | null>(null);
   const [exploredIds, setExploredIds] = useState<ProposalId[]>([]);
+  const [locationName, setLocationName] = useState<string>('Dataran Hutan Harapan');
+  const [nearbySpot, setNearbySpot] = useState<InteractiveSpot | null>(null);
+  const [natureCard, setNatureCard] = useState<InteractiveSpot | null>(null);
+  const [runMode, setRunMode] = useState(false);
+  const [cameraPreset, setCameraPreset] = useState<'follow' | 'wide'>('follow');
+  const [dockOpen, setDockOpen] = useState(true);
 
   // Stage 3: Decision & Real Voice Recording ("SUARA EJEN – BENTANGKAN PILIHAN KAMU!")
   const [chosenId, setChosenId] = useState<ProposalId | null>(null);
@@ -288,274 +291,58 @@ export function Mission3OperationAdventure({
   const audioCtxRef = useRef<AudioContext | null>(null);
   const meterRafRef = useRef<number>(0);
 
-  // Three.js futuristic Hutan Harapan & Command Center backdrop
+  // Live 3D Hutan Harapan world refs & input trackers
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const worldRef = useRef<HutanHarapanWorldHandle | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const stageRef = useRef<Mission3Stage>(stage);
   stageRef.current = stage;
+  const activeProposalRef = useRef<ProposalId | null>(activeProposalId);
+  activeProposalRef.current = activeProposalId;
+  const runModeRef = useRef<boolean>(runMode);
+  runModeRef.current = runMode;
+
+  const keysHeldRef = useRef<Set<string>>(new Set());
+  const dpadVectorRef = useRef<{ x: number; z: number }>({ x: 0, z: 0 });
+  const lastLocRef = useRef<string>('Dataran Hutan Harapan');
+  const lastNearbyIdRef = useRef<string | null>(null);
+  const nearbySpotRef = useRef<InteractiveSpot | null>(null);
+  nearbySpotRef.current = nearbySpot;
 
   const avatarDef = AVATARS.find((a) => a.id === user.avatar) || AVATARS[1];
 
-  // =========================================================================
-  // LIVE 3D FUTURISTIC HUTAN HARAPAN & COMMAND CENTER CANVAS
-  // =========================================================================
-  useEffect(() => {
-    const container = mountRef.current;
-    if (!container) return;
-
-    let renderer: THREE.WebGLRenderer;
-    try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    } catch {
+  const syncMovementVector = useCallback(() => {
+    const world = worldRef.current;
+    if (!world) return;
+    if (stageRef.current !== 'explore' || activeProposalRef.current !== null) {
+      world.setInputVector(0, 0, false);
       return;
     }
+    const keys = keysHeldRef.current;
+    let kx = 0;
+    let kz = 0;
+    if (keys.has('KeyW') || keys.has('ArrowUp')) kz -= 1;
+    if (keys.has('KeyS') || keys.has('ArrowDown')) kz += 1;
+    if (keys.has('KeyA') || keys.has('ArrowLeft')) kx -= 1;
+    if (keys.has('KeyD') || keys.has('ArrowRight')) kx += 1;
 
-    const gl = renderer.getContext();
-    const dbg = gl?.getExtension('WEBGL_debug_renderer_info');
-    const glName = dbg ? String(gl?.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '') : '';
-    const isSoftwareGl = /swiftshader|llvmpipe|softpipe/i.test(glName);
+    const vx = kx !== 0 ? kx : dpadVectorRef.current.x;
+    const vz = kz !== 0 ? kz : dpadVectorRef.current.z;
+    const shiftHeld = keys.has('ShiftLeft') || keys.has('ShiftRight');
+    world.setInputVector(vx, vz, runModeRef.current || shiftHeld);
+  }, []);
 
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isSoftwareGl ? 1 : 2));
-    renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.1;
-    container.appendChild(renderer.domElement);
+  useEffect(() => {
+    syncMovementVector();
+  }, [stage, activeProposalId, runMode, syncMovementVector]);
 
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#061938');
-    scene.fog = new THREE.FogExp2('#0b2a52', 0.015);
+  useEffect(() => {
+    worldRef.current?.setExploredProposals(exploredIds);
+  }, [exploredIds]);
 
-    const camera = new THREE.PerspectiveCamera(
-      52,
-      container.clientWidth / Math.max(1, container.clientHeight),
-      0.1,
-      180
-    );
-    camera.position.set(0, 5.2, 17);
-
-    // Warm golden sunlight + futuristic cyan & purple rim lights
-    const hemi = new THREE.HemisphereLight('#7dd3fc', '#064e3b', 1.25);
-    scene.add(hemi);
-    const sunLight = new THREE.DirectionalLight('#fef08a', 1.5);
-    sunLight.position.set(12, 22, 10);
-    scene.add(sunLight);
-    const cyanLight = new THREE.PointLight('#22d3ee', 2.4, 48);
-    cyanLight.position.set(-8, 6, -4);
-    scene.add(cyanLight);
-    const purpleLight = new THREE.PointLight('#a855f7', 2.0, 48);
-    purpleLight.position.set(8, 6, -5);
-    scene.add(purpleLight);
-
-    // Glowing Futuristic Command / Forest Platform
-    const platform = new THREE.Mesh(
-      new THREE.CylinderGeometry(9.5, 10.5, 0.7, 48),
-      new THREE.MeshStandardMaterial({ color: '#0c2747', metalness: 0.55, roughness: 0.25 })
-    );
-    platform.position.y = -0.35;
-    scene.add(platform);
-
-    // Flowing Clean EcoWorld Stream Band on Forest Floor
-    const streamMat = new THREE.MeshStandardMaterial({
-      color: '#0ea5e9',
-      emissive: '#0284c7',
-      emissiveIntensity: 0.45,
-      roughness: 0.15,
-      metalness: 0.15,
-    });
-    const riverPlane = new THREE.Mesh(new THREE.PlaneGeometry(46, 4.5), streamMat);
-    riverPlane.rotation.x = -Math.PI / 2;
-    riverPlane.position.set(0, -0.45, -10.5);
-    scene.add(riverPlane);
-
-    // Hologram Hutan Harapan Rings
-    const holoGroup = new THREE.Group();
-    holoGroup.position.set(0, 3.8, -4.5);
-    scene.add(holoGroup);
-
-    const holoOrbMat = new THREE.MeshStandardMaterial({
-      color: '#22c55e',
-      emissive: '#10b981',
-      emissiveIntensity: 0.55,
-      wireframe: true,
-    });
-    const holoOrb = new THREE.Mesh(new THREE.IcosahedronGeometry(1.9, 2), holoOrbMat);
-    holoGroup.add(holoOrb);
-
-    const ringMat = new THREE.MeshBasicMaterial({ color: '#22d3ee' });
-    const holoRing = new THREE.Mesh(new THREE.TorusGeometry(3.2, 0.09, 12, 64), ringMat);
-    holoRing.rotation.x = Math.PI / 2.5;
-    holoGroup.add(holoRing);
-
-    // Contact shadow for 3D EcoWorld Agent
-    const shadowCanvas = document.createElement('canvas');
-    shadowCanvas.width = 128;
-    shadowCanvas.height = 128;
-    const sCtx = shadowCanvas.getContext('2d')!;
-    const sGrad = sCtx.createRadialGradient(64, 64, 6, 64, 64, 62);
-    sGrad.addColorStop(0, 'rgba(2, 6, 23, 0.7)');
-    sGrad.addColorStop(1, 'rgba(2, 6, 23, 0)');
-    sCtx.fillStyle = sGrad;
-    sCtx.fillRect(0, 0, 128, 128);
-    const shadowTex = new THREE.CanvasTexture(shadowCanvas);
-
-    // 3D EcoWorld Agent standing on deck
-    const agentRig = buildHumanEcoAgent(avatarDef.id, shadowTex, { showPedestal: true });
-    agentRig.group.position.set(-4.8, 0, 2.2);
-    agentRig.group.rotation.y = 0.55;
-    agentRig.group.scale.setScalar(1.35);
-    scene.add(agentRig.group);
-
-    // Lush Hutan Harapan Trees around clearing (grow & brighten vibrantly on victory)
-    const trees: THREE.Group[] = [];
-    const treeCoords: [number, number, number][] = [
-      [-11.5, -0.4, -6.5],
-      [-9, -0.4, -14.5],
-      [9.5, -0.4, -7],
-      [12.5, -0.4, -14.5],
-      [0, -0.4, -18],
-      [-14.5, -0.4, 2.5],
-      [14.5, -0.4, 2],
-      [-4.5, -0.4, -15.5],
-      [5.5, -0.4, -15.5],
-    ];
-    treeCoords.forEach(([tx, ty, tz]) => {
-      const tg = new THREE.Group();
-      const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.28, 0.42, 2.3, 8),
-        new THREE.MeshStandardMaterial({ color: '#78350f' })
-      );
-      trunk.position.y = 1.15;
-      const crown = new THREE.Mesh(
-        new THREE.DodecahedronGeometry(1.55, 1),
-        new THREE.MeshStandardMaterial({ color: '#22c55e', roughness: 0.65 })
-      );
-      crown.position.y = 3.0;
-      tg.add(trunk, crown);
-      tg.position.set(tx, ty, tz);
-      scene.add(tg);
-      trees.push(tg);
-    });
-
-    // Floating Sunlight / Firefly Spores
-    const partCount = isSoftwareGl ? 60 : 160;
-    const partPos = new Float32Array(partCount * 3);
-    for (let i = 0; i < partCount; i++) {
-      partPos[i * 3] = (Math.random() - 0.5) * 34;
-      partPos[i * 3 + 1] = Math.random() * 14 + 0.5;
-      partPos[i * 3 + 2] = (Math.random() - 0.5) * 26 - 3;
-    }
-    const partGeo = new THREE.BufferGeometry();
-    partGeo.setAttribute('position', new THREE.BufferAttribute(partPos, 3));
-    const partMat = new THREE.PointsMaterial({
-      color: '#5eead4',
-      size: 0.24,
-      transparent: true,
-      opacity: 0.85,
-    });
-    const particles = new THREE.Points(partGeo, partMat);
-    scene.add(particles);
-
-    const clock = new THREE.Clock();
-    let frameId = 0;
-    let disposed = false;
-
-    const onResize = () => {
-      if (!container) return;
-      const w = container.clientWidth;
-      const h = Math.max(1, container.clientHeight);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    };
-    window.addEventListener('resize', onResize);
-
-    const onContextLost = (e: Event) => {
-      e.preventDefault();
-      disposed = true;
-      cancelAnimationFrame(frameId);
-      clearTimeout(frameId);
-    };
-    renderer.domElement.addEventListener('webglcontextlost', onContextLost);
-
-    function renderLoop() {
-      if (disposed) return;
-      const dt = Math.min(0.05, clock.getDelta());
-      const elapsed = clock.elapsedTime;
-      const st = stageRef.current;
-      const isVictory = st === 'victory';
-      const isExploreOrDecision = st === 'explore' || st === 'decision';
-
-      const targetBg = new THREE.Color(
-        isVictory ? '#0284c7' : isExploreOrDecision ? '#064e3b' : '#061938'
-      );
-      (scene.background as THREE.Color).lerp(targetBg, dt * 2.0);
-      if (scene.fog instanceof THREE.FogExp2) {
-        scene.fog.color.lerp(
-          new THREE.Color(isVictory ? '#38bdf8' : isExploreOrDecision ? '#0f766e' : '#0b2a52'),
-          dt * 2.0
-        );
-      }
-
-      holoOrb.rotation.y = elapsed * 0.38;
-      holoRing.rotation.z = elapsed * 0.52;
-      holoOrbMat.emissive.set(isVictory ? '#4ade80' : '#10b981');
-      ringMat.color.set(isVictory ? '#fde047' : '#22d3ee');
-      partMat.color.set(isVictory ? '#fef08a' : '#5eead4');
-      streamMat.emissiveIntensity = isVictory ? 0.85 : 0.4;
-
-      particles.rotation.y = elapsed * 0.05;
-      animateHumanAgent(agentRig, elapsed, dt, {
-        isMoving: false,
-        hovered: isVictory || st === 'emergency_call',
-        selected: true,
-      });
-
-      trees.forEach((tr, idx) => {
-        const targetScale = isVictory
-          ? 1.32 + Math.sin(elapsed * 2 + idx) * 0.05
-          : isExploreOrDecision
-          ? 1.05
-          : 0.9;
-        tr.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), dt * 2.8);
-      });
-
-      camera.position.x = Math.sin(elapsed * 0.2) * 1.3;
-      camera.position.y = 5.0 + Math.cos(elapsed * 0.26) * 0.3;
-      camera.lookAt(0, 2.7, -2.5);
-
-      renderer.render(scene, camera);
-
-      if (isSoftwareGl) {
-        frameId = window.setTimeout(() => requestAnimationFrame(renderLoop), 65);
-      } else {
-        frameId = requestAnimationFrame(renderLoop);
-      }
-    }
-
-    renderLoop();
-
-    return () => {
-      disposed = true;
-      cancelAnimationFrame(frameId);
-      clearTimeout(frameId);
-      window.removeEventListener('resize', onResize);
-      renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
-      scene.traverse((obj) => {
-        if (obj instanceof THREE.Mesh || obj instanceof THREE.Points) {
-          obj.geometry?.dispose();
-          if (Array.isArray(obj.material)) {
-            obj.material.forEach((m) => m.dispose());
-          } else {
-            obj.material?.dispose();
-          }
-        }
-      });
-      shadowTex.dispose();
-      renderer.dispose();
-      if (renderer.domElement.parentNode === container) {
-        container.removeChild(renderer.domElement);
-      }
-    };
-  }, [avatarDef.id]);
+  useEffect(() => {
+    worldRef.current?.setVictoryState(stage === 'victory');
+  }, [stage]);
 
   // =========================================================================
   // CONTINUOUS BAHASA MELAYU AUDIO ENGINE (READS ONCE CONTINUOUSLY, NEVER SPLIT)
@@ -591,7 +378,7 @@ export function Mission3OperationAdventure({
     (key: string, scriptText: string) => {
       if ('speechSynthesis' in window) {
         const voices = window.speechSynthesis.getVoices();
-        const malayVoice = pickMalaySpeechVoice(voices);
+        const { voice: malayVoice } = pickMalaysianSpeechVoice(voices);
         if (malayVoice) {
           window.speechSynthesis.cancel();
           speechPausedRef.current = false;
@@ -625,12 +412,12 @@ export function Mission3OperationAdventure({
         }
       }
 
-      // Strict Bahasa Melayu guard: Never play an English voice!
+      // Strict Bahasa Melayu Malaysia (ms-MY) guard: Never play Indonesian (id-ID) or English voices!
       audioModeRef.current = 'silent';
       setAudioStatus('playing');
       setMusicState({ suppressedForAudio: false });
       setAudioNotice(
-        'Pelayar ini tidak mempunyai enjin suara Bahasa Melayu tempatan. Baca penerangan lengkap pada skrin di atas (tiada suara Inggeris digunakan).'
+        'Pelayar ini tidak mempunyai enjin suara Bahasa Melayu Malaysia (ms-MY) tempatan. Sila baca penerangan lengkap pada skrin di atas (tiada suara Bahasa Indonesia atau Inggeris digunakan).'
       );
       silentTimerRef.current = window.setTimeout(() => {
         markAudioEnded(key);
@@ -652,7 +439,7 @@ export function Mission3OperationAdventure({
           const resp = await fetch('/api/tts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: scriptText, style: stylePrompt }),
+            body: JSON.stringify({ text: scriptText, style: buildMalaysianTtsStyle(stylePrompt) }),
           });
           if (!resp.ok) throw new Error('TTS unavailable');
           const data = (await resp.json()) as { audioBase64?: string; mimeType?: string };
@@ -683,7 +470,6 @@ export function Mission3OperationAdventure({
         try {
           await audio.play();
         } catch {
-          // Autoplay blocked by browser policy — surface clear Play button
           setAudioStatus('blocked');
           setMusicState({ suppressedForAudio: false });
         }
@@ -720,7 +506,11 @@ export function Mission3OperationAdventure({
       });
       setAudioStatus('playing');
       setMusicState({ suppressedForAudio: true });
-    } else if (audioModeRef.current === 'speech' && 'speechSynthesis' in window && window.speechSynthesis.paused) {
+    } else if (
+      audioModeRef.current === 'speech' &&
+      'speechSynthesis' in window &&
+      window.speechSynthesis.paused
+    ) {
       window.speechSynthesis.resume();
       setAudioStatus('playing');
       setMusicState({ suppressedForAudio: true });
@@ -728,6 +518,371 @@ export function Mission3OperationAdventure({
       playContinuousAudio(key, scriptText, stylePrompt);
     }
   };
+
+  const handleSelectProposalInExplore = useCallback(
+    (proposal: ProposalDef) => {
+      playSFX('click');
+      setNatureCard(null);
+      setActiveProposalId(proposal.id);
+      setExploredIds((prev) => (prev.includes(proposal.id) ? prev : [...prev, proposal.id]));
+      worldRef.current?.walkToSpot(`prop_${proposal.id}`);
+      playContinuousAudio(
+        `prop_${proposal.id}`,
+        proposal.audioScript,
+        'Speak in clear, friendly, enthusiastic standard Malaysian Bahasa Melayu (Bahasa Melayu baku Malaysia) suitable for primary school pupils.'
+      );
+    },
+    [playContinuousAudio]
+  );
+
+  const handleInspectSpot = useCallback(
+    (spot: InteractiveSpot) => {
+      if (spot.kind === 'proposal' && spot.proposalId) {
+        const prop = PROPOSALS.find((p) => p.id === spot.proposalId);
+        if (prop) {
+          handleSelectProposalInExplore(prop);
+        }
+        return;
+      }
+      playSFX('clue');
+      worldRef.current?.walkToSpot(spot.id);
+      worldRef.current?.triggerInspectEffect(spot.id);
+      setNatureCard(spot);
+    },
+    [handleSelectProposalInExplore]
+  );
+
+  const inspectSpotRef = useRef(handleInspectSpot);
+  inspectSpotRef.current = handleInspectSpot;
+
+  // =========================================================================
+  // LIVE 3D INTERACTIVE FOREST WORLD ("HUTAN HARAPAN")
+  // =========================================================================
+  useEffect(() => {
+    const container = mountRef.current;
+    if (!container) return;
+
+    let renderer: THREE.WebGLRenderer;
+    try {
+      // Probe context cleanly first so hardware vs software GL decides AA cleanly
+      const probeCanvas = document.createElement('canvas');
+      const probeGl = probeCanvas.getContext('webgl2') || probeCanvas.getContext('webgl');
+      const probeDbg = probeGl?.getExtension('WEBGL_debug_renderer_info');
+      const probeName = probeDbg
+        ? String(probeGl?.getParameter(probeDbg.UNMASKED_RENDERER_WEBGL) || '')
+        : '';
+      const probeSoft = /swiftshader|llvmpipe|softpipe/i.test(probeName);
+
+      renderer = new THREE.WebGLRenderer({
+        antialias: !probeSoft,
+        powerPreference: 'high-performance',
+      });
+    } catch {
+      return;
+    }
+
+    const gl = renderer.getContext();
+    const dbg = gl?.getExtension('WEBGL_debug_renderer_info');
+    const glName = dbg ? String(gl?.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '') : '';
+    const isSoftwareGl = /swiftshader|llvmpipe|softpipe/i.test(glName);
+
+    renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(container.clientWidth, Math.max(1, container.clientHeight));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
+    renderer.shadowMap.enabled = !isSoftwareGl;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    container.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#0c4a6e');
+    scene.fog = new THREE.FogExp2('#0e7490', 0.0115);
+
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const envRT = pmremGenerator.fromScene(new RoomEnvironment(), 0.04);
+    scene.environment = envRT.texture;
+    scene.environmentIntensity = 0.65;
+    pmremGenerator.dispose();
+
+    const camera = new THREE.PerspectiveCamera(
+      54,
+      container.clientWidth / Math.max(1, container.clientHeight),
+      0.15,
+      190
+    );
+    camera.position.set(0, 6.2, 18.5);
+    camera.layers.enable(1);
+    cameraRef.current = camera;
+
+    const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+    const world = buildHutanHarapanWorld(avatarDef.id, maxAnisotropy);
+    worldRef.current = world;
+    scene.add(world.group);
+
+    if (!isSoftwareGl) {
+      renderer.compile(scene, camera);
+    }
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.layers.enable(1);
+
+    let isDragging = false;
+    let movedDuringDrag = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let prevX = 0;
+    let prevY = 0;
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      isDragging = true;
+      movedDuringDrag = false;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      prevX = e.clientX;
+      prevY = e.clientY;
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (isDragging) {
+        const dx = e.clientX - prevX;
+        const dy = e.clientY - prevY;
+        prevX = e.clientX;
+        prevY = e.clientY;
+        if (Math.hypot(e.clientX - dragStartX, e.clientY - dragStartY) > 6) {
+          movedDuringDrag = true;
+        }
+        if (movedDuringDrag) {
+          world.orbitCameraBy(-dx * 0.006, dy * 0.0048);
+        }
+        return;
+      }
+
+      if (stageRef.current === 'explore' && activeProposalRef.current === null && rect.width > 0) {
+        _rayNdc.set(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        raycaster.setFromCamera(_rayNdc, camera);
+        const hits = raycaster.intersectObjects(world.getRayTargets(), false);
+        const isSpot = hits.length > 0 && hits[0].object.userData?.type === 'spot';
+        renderer.domElement.style.cursor = isSpot ? 'pointer' : 'grab';
+      } else {
+        renderer.domElement.style.cursor = 'default';
+      }
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      if (!isDragging) return;
+      isDragging = false;
+      if (movedDuringDrag) return;
+      if (stageRef.current !== 'explore' || activeProposalRef.current !== null) return;
+
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      _rayNdc.set(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      raycaster.setFromCamera(_rayNdc, camera);
+      const hits = raycaster.intersectObjects(world.getRayTargets(), false);
+      if (hits.length === 0) return;
+
+      const topHit = hits[0];
+      if (topHit.object.userData?.type === 'spot') {
+        const spotId = String(topHit.object.userData.spotId || '');
+        const spot = world.getInteractiveSpots().find((s) => s.id === spotId);
+        if (spot) {
+          inspectSpotRef.current(spot);
+        }
+      } else if (topHit.object.userData?.type === 'ground') {
+        world.setWalkTarget(topHit.point.x, topHit.point.z);
+      }
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      if (stageRef.current !== 'explore') return;
+      e.preventDefault();
+      world.zoomCameraBy(e.deltaY * 0.008);
+    };
+
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+
+      if (
+        e.code === 'KeyW' ||
+        e.code === 'KeyA' ||
+        e.code === 'KeyS' ||
+        e.code === 'KeyD' ||
+        e.code === 'ArrowUp' ||
+        e.code === 'ArrowDown' ||
+        e.code === 'ArrowLeft' ||
+        e.code === 'ArrowRight' ||
+        e.code === 'ShiftLeft' ||
+        e.code === 'ShiftRight'
+      ) {
+        if (stageRef.current === 'explore' && activeProposalRef.current === null) {
+          if (e.code.startsWith('Arrow')) e.preventDefault();
+          keysHeldRef.current.add(e.code);
+          syncMovementVector();
+        }
+      } else if (e.code === 'KeyE' && !e.repeat) {
+        if (stageRef.current === 'explore' && activeProposalRef.current === null && nearbySpotRef.current) {
+          inspectSpotRef.current(nearbySpotRef.current);
+        }
+      }
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (keysHeldRef.current.has(e.code)) {
+        keysHeldRef.current.delete(e.code);
+        syncMovementVector();
+      }
+    };
+
+    const onBlur = () => {
+      keysHeldRef.current.clear();
+      dpadVectorRef.current = { x: 0, z: 0 };
+      syncMovementVector();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+
+    const onResize = () => {
+      if (!container) return;
+      const w = container.clientWidth;
+      const h = Math.max(1, container.clientHeight);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    };
+    window.addEventListener('resize', onResize);
+
+    const clock = new THREE.Clock();
+    let frameId = 0;
+    let disposed = false;
+
+    const onContextLost = (e: Event) => {
+      e.preventDefault();
+      disposed = true;
+      cancelAnimationFrame(frameId);
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onContextLost);
+
+    const gl2 = gl as WebGL2RenderingContext;
+    const canFenceSync = isSoftwareGl && typeof gl2?.fenceSync === 'function';
+
+    function afterDraw(cb: () => void) {
+      if (!canFenceSync) {
+        frameId = requestAnimationFrame(cb);
+        return;
+      }
+      const sync = gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      if (!sync) {
+        frameId = requestAnimationFrame(cb);
+        return;
+      }
+      gl2.flush();
+      const pollFence = () => {
+        if (disposed) {
+          gl2.deleteSync(sync);
+          return;
+        }
+        const status = gl2.clientWaitSync(sync, 0, 0);
+        if (
+          status === gl2.ALREADY_SIGNALED ||
+          status === gl2.CONDITION_SATISFIED ||
+          status === gl2.WAIT_FAILED
+        ) {
+          gl2.deleteSync(sync);
+          frameId = requestAnimationFrame(cb);
+        } else {
+          frameId = requestAnimationFrame(pollFence);
+        }
+      };
+      frameId = requestAnimationFrame(pollFence);
+    }
+
+    function renderLoop() {
+      if (disposed) return;
+      const dt = Math.min(0.05, clock.getDelta());
+      const elapsed = clock.elapsedTime;
+      const st = stageRef.current;
+
+      // Smoothly transition daylight atmosphere per mission stage (zero per-frame alloc)
+      if (st === 'victory') {
+        _targetBgColor.setHex(0x38bdf8);
+        _targetFogColor.setHex(0xbae6fd);
+      } else if (st === 'explore') {
+        _targetBgColor.setHex(0x7dd3fc);
+        _targetFogColor.setHex(0xa7f3d0);
+      } else if (st === 'decision') {
+        _targetBgColor.setHex(0x0f766e);
+        _targetFogColor.setHex(0x134e4a);
+      } else {
+        _targetBgColor.setHex(0x0c4a6e);
+        _targetFogColor.setHex(0x0e7490);
+      }
+
+      if (scene.background instanceof THREE.Color) {
+        scene.background.lerp(_targetBgColor, dt * 2.2);
+      }
+      if (scene.fog instanceof THREE.FogExp2) {
+        scene.fog.color.lerp(_targetFogColor, dt * 2.2);
+      }
+
+      const simState = world.update(dt, elapsed, camera, st);
+
+      if (simState.locationName !== lastLocRef.current) {
+        lastLocRef.current = simState.locationName;
+        setLocationName(simState.locationName);
+      }
+      const nextSpotId = simState.nearbySpot ? simState.nearbySpot.id : null;
+      if (nextSpotId !== lastNearbyIdRef.current) {
+        lastNearbyIdRef.current = nextSpotId;
+        setNearbySpot(simState.nearbySpot);
+      }
+
+      renderer.render(scene, camera);
+      afterDraw(renderLoop);
+    }
+
+    renderLoop();
+
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      renderer.domElement.removeEventListener('wheel', onWheel);
+      renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
+
+      world.dispose();
+      envRT.dispose();
+      renderer.dispose();
+      if (renderer.domElement.parentNode === container) {
+        container.removeChild(renderer.domElement);
+      }
+      worldRef.current = null;
+      cameraRef.current = null;
+    };
+  }, [avatarDef.id, syncMovementVector]);
 
   // Auto-play Aktiviti 1 emergency briefing ONCE on entering emergency_call (never loops/retriggers)
   useEffect(() => {
@@ -916,20 +1071,6 @@ export function Mission3OperationAdventure({
     playSFX('click');
   };
 
-  // =========================================================================
-  // STAGE NAVIGATION & COMPLETION
-  // =========================================================================
-  const handleSelectProposalInExplore = (proposal: ProposalDef) => {
-    playSFX('click');
-    setActiveProposalId(proposal.id);
-    setExploredIds((prev) => (prev.includes(proposal.id) ? prev : [...prev, proposal.id]));
-    playContinuousAudio(
-      `prop_${proposal.id}`,
-      proposal.audioScript,
-      'Speak in clear, friendly, enthusiastic standard Malaysian Bahasa Melayu (Bahasa Melayu baku Malaysia) suitable for primary school pupils.'
-    );
-  };
-
   const handleFinishMission3 = (afterAction: 'map' | 'next_mission') => {
     stopCurrentAudio();
     stopMicRecording();
@@ -948,17 +1089,29 @@ export function Mission3OperationAdventure({
     );
   };
 
+  const setDpadDir = (x: number, z: number) => {
+    dpadVectorRef.current = { x, z };
+    syncMovementVector();
+  };
+
+  const toggleCameraPreset = () => {
+    playSFX('click');
+    const next = cameraPreset === 'follow' ? 'wide' : 'follow';
+    setCameraPreset(next);
+    worldRef.current?.setCameraPreset(next);
+  };
+
   const activeProposal = PROPOSALS.find((p) => p.id === activeProposalId) || null;
   const chosenProposal = PROPOSALS.find((p) => p.id === chosenId) || null;
 
   return (
     <div className="fixed inset-0 z-40 overflow-hidden bg-slate-950 select-none">
-      {/* Live 3D Hutan Harapan & Command Center Canvas */}
-      <div ref={mountRef} className="absolute inset-0 w-full h-full" aria-hidden="true" />
+      {/* Live 3D Hutan Harapan Interactive World Canvas */}
+      <div ref={mountRef} className="absolute inset-0 w-full h-full" />
 
       {/* Top HUD Bar */}
-      <header className="relative z-20 px-3 sm:px-6 pt-3 flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex items-center gap-2.5 px-4 py-2 rounded-2xl portal-glass-card">
+      <header className="relative z-20 px-3 sm:px-6 pt-3 flex flex-wrap items-center justify-between gap-2.5 pointer-events-none">
+        <div className="pointer-events-auto flex items-center gap-2.5 px-4 py-2 rounded-2xl portal-glass-card">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 via-cyan-400 to-purple-500 text-slate-950 flex items-center justify-center font-game font-black shadow-lg shrink-0">
             M3
           </div>
@@ -973,7 +1126,7 @@ export function Mission3OperationAdventure({
         </div>
 
         {/* Clean 4-Step Progress Indicator */}
-        <div className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-2xl portal-glass-card text-[11px] font-game font-bold">
+        <div className="pointer-events-auto hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-2xl portal-glass-card text-[11px] font-game font-bold">
           {(
             [
               ['emergency_call', '1. Panggilan Kecemasan'],
@@ -995,7 +1148,14 @@ export function Mission3OperationAdventure({
           ))}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="pointer-events-auto flex items-center gap-2">
+          {stage === 'explore' && (
+            <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-2xl portal-glass-card border border-emerald-400/60 text-xs font-game font-bold text-emerald-200">
+              <MapPin className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+              <span>{locationName}</span>
+            </div>
+          )}
+
           <div className="hidden sm:flex items-center gap-2 rounded-2xl portal-glass-sub px-2.5 py-1.5">
             <button
               type="button"
@@ -1036,258 +1196,514 @@ export function Mission3OperationAdventure({
         </div>
       </header>
 
-      {/* Main Responsive Stage Container */}
-      <main className="relative z-20 h-[calc(100vh-76px)] overflow-y-auto eco-scroll p-3 sm:p-5 pb-24 flex items-center justify-center">
-        {/* =================================================================
-            AKTIVITI 1 – PANGGILAN KECEMASAN (CONTINUOUS AUDIO + FULL SCRIPT)
-           ================================================================= */}
-        {stage === 'emergency_call' && (
-          <div className="portal-glass-card modal-pop-in w-full max-w-4xl rounded-3xl p-5 sm:p-7 text-white space-y-5 border-2 border-cyan-400/80 my-auto">
-            <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-cyan-400/25">
-              <div className="flex items-center gap-3.5">
-                <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-400 via-cyan-400 to-purple-500 text-slate-950 flex items-center justify-center shadow-[0_0_24px_rgba(34,211,238,0.6)] shrink-0">
-                  <Radio
-                    className={`w-7 h-7 ${
-                      audioKey === 'emergency' && audioStatus === 'playing' ? 'animate-pulse' : ''
-                    }`}
-                  />
-                </div>
-                <div>
-                  <div className="text-xs font-game font-bold text-orange-300 tracking-wider">
-                    AKTIVITI 1 · PANGGILAN KECEMASAN KETUA PUSAT KAWALAN
+      {/* ===================================================================
+          STAGE 1: PANGGILAN KECEMASAN
+          STAGE 3: KEPUTUSAN AKHIR EJEN & SUARA EJEN
+          STAGE 4: KEJAYAAN HUTAN HARAPAN
+         =================================================================== */}
+      {stage !== 'explore' && (
+        <main className="relative z-20 h-[calc(100vh-76px)] overflow-y-auto eco-scroll p-3 sm:p-5 pb-20 flex items-center justify-center">
+          {/* AKTIVITI 1 – PANGGILAN KECEMASAN */}
+          {stage === 'emergency_call' && (
+            <div className="portal-glass-card modal-pop-in w-full max-w-4xl rounded-3xl p-5 sm:p-7 text-white space-y-5 border-2 border-cyan-400/80 my-auto">
+              <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-cyan-400/25">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-400 via-cyan-400 to-purple-500 text-slate-950 flex items-center justify-center shadow-[0_0_24px_rgba(34,211,238,0.6)] shrink-0">
+                    <Radio className="w-7 h-7" />
                   </div>
-                  <h2 className="font-game text-xl sm:text-2xl font-black text-white">
-                    Arahan Operasi: Selamatkan Hutan Harapan
-                  </h2>
-                  <p className="text-xs text-cyan-200 mt-0.5">
-                    {audioKey === 'emergency' && audioStatus === 'loading'
-                      ? 'Menyambungkan suara Ketua Pusat Kawalan...'
-                      : audioKey === 'emergency' && audioStatus === 'playing'
-                      ? 'Ketua Pusat Kawalan sedang menyampaikan arahan penuh...'
-                      : audioKey === 'emergency' && audioStatus === 'paused'
-                      ? 'Audio arahan dijeda. Tekan Sambung untuk mendengar semula.'
-                      : audioKey === 'emergency' && audioStatus === 'blocked'
-                      ? 'Tekan butang Main Audio di bawah untuk mendengar arahan.'
-                      : 'Arahan lengkap Pusat Kawalan EcoWorld.'}
-                  </p>
+                  <div>
+                    <div className="text-xs font-game font-bold text-orange-300 tracking-wider">
+                      AKTIVITI 1 · PANGGILAN KECEMASAN KETUA PUSAT KAWALAN
+                    </div>
+                    <h2 className="font-game text-xl sm:text-2xl font-black text-white">
+                      Arahan Operasi: Selamatkan Hutan Harapan
+                    </h2>
+                    <p className="text-xs text-cyan-200 mt-0.5">
+                      {audioKey === 'emergency' && audioStatus === 'loading'
+                        ? 'Menyambungkan suara Ketua Pusat Kawalan...'
+                        : audioKey === 'emergency' && audioStatus === 'playing'
+                        ? 'Ketua Pusat Kawalan sedang menyampaikan arahan penuh...'
+                        : audioKey === 'emergency' && audioStatus === 'paused'
+                        ? 'Audio arahan dijeda. Tekan Sambung untuk mendengar semula.'
+                        : audioKey === 'emergency' && audioStatus === 'blocked'
+                        ? 'Tekan butang Main Audio di bawah untuk mendengar arahan.'
+                        : 'Arahan lengkap Pusat Kawalan EcoWorld.'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Animated Waveform Indicator */}
+                <div className="flex items-center gap-2.5 px-3.5 py-2 rounded-2xl portal-glass-sub border border-cyan-400/40">
+                  <div className="flex items-end gap-1 h-7">
+                    {[0, 1, 2, 3, 4].map((bar) => (
+                      <span
+                        key={bar}
+                        style={{ animationDelay: `${bar * 0.1}s` }}
+                        className={`w-1.5 rounded-full transition-all ${
+                          audioKey === 'emergency' && audioStatus === 'playing'
+                            ? 'h-7 bg-emerald-400 wave-bar-active'
+                            : 'h-2 bg-cyan-400/45'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                  <span className="text-xs font-game font-bold text-cyan-100">
+                    {audioKey === 'emergency' && audioStatus === 'playing'
+                      ? 'SEDANG MAIN'
+                      : emergencyFinishedOnce
+                      ? 'SELESAI'
+                      : 'SIARAN MASUK'}
+                  </span>
                 </div>
               </div>
 
-              {/* Animated Waveform Indicator */}
-              <div className="flex items-center gap-2.5 px-3.5 py-2 rounded-2xl portal-glass-sub border border-cyan-400/40">
-                <div className="flex items-end gap-1 h-7">
-                  {[0, 1, 2, 3, 4].map((bar) => (
-                    <span
-                      key={bar}
-                      style={{ animationDelay: `${bar * 0.1}s` }}
-                      className={`w-1.5 rounded-full transition-all ${
-                        audioKey === 'emergency' && audioStatus === 'playing'
-                          ? 'h-7 bg-emerald-400 wave-bar-active'
-                          : 'h-2 bg-cyan-400/45'
-                      }`}
-                    />
-                  ))}
+              {/* Full Script Displayed Cleanly in One Readable Panel */}
+              <div className="rounded-3xl bg-slate-950/88 border-2 border-purple-400/55 p-5 sm:p-7 space-y-3 shadow-inner">
+                <div className="text-xs font-game font-bold text-amber-300 tracking-wider">
+                  TEKS ARAHAN KETUA PUSAT KAWALAN
                 </div>
-                <span className="text-xs font-game font-bold text-cyan-100">
-                  {audioKey === 'emergency' && audioStatus === 'playing'
-                    ? 'SEDANG MAIN'
-                    : emergencyFinishedOnce
-                    ? 'SELESAI'
-                    : 'SIARAN MASUK'}
-                </span>
+                <p className="text-base sm:text-xl font-semibold text-white leading-relaxed">
+                  &ldquo;{EMERGENCY_SCRIPT}&rdquo;
+                </p>
+                {audioNotice && <p className="text-xs text-amber-200 pt-1">{audioNotice}</p>}
               </div>
-            </div>
 
-            {/* Full Script Displayed Cleanly in One Readable Panel (No splitting/highlighting) */}
-            <div className="rounded-3xl bg-slate-950/88 border-2 border-purple-400/55 p-5 sm:p-7 space-y-3 shadow-inner">
-              <div className="text-xs font-game font-bold text-amber-300 tracking-wider">
-                TEKS ARAHAN KETUA PUSAT KAWALAN
-              </div>
-              <p className="text-base sm:text-xl font-semibold text-white leading-relaxed">
-                &ldquo;{EMERGENCY_SCRIPT}&rdquo;
-              </p>
-              {audioNotice && (
-                <p className="text-xs text-amber-200 pt-1">{audioNotice}</p>
-              )}
-            </div>
+              {/* Audio Controls + AYUH, SELAMATKAN HUTAN! CTA */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {audioKey === 'emergency' && audioStatus === 'playing' ? (
+                    <button
+                      type="button"
+                      onClick={handlePauseAudio}
+                      className="btn-game-gold btn-game-sm px-4 py-2.5 text-slate-950 font-game text-xs font-black flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Pause className="w-4 h-4 fill-current" />
+                      <span>Jeda</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleResumeAudio(
+                          'emergency',
+                          EMERGENCY_SCRIPT,
+                          'Speak in energetic, friendly, clear standard Malaysian Bahasa Melayu (Bahasa Melayu baku Malaysia) like the EcoWorld Chief Command Officer calling primary school hero agents.'
+                        )
+                      }
+                      disabled={audioKey === 'emergency' && audioStatus === 'loading'}
+                      className="btn-game-cyan btn-game-sm px-4 py-2.5 text-slate-950 font-game text-xs font-black flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Play className="w-4 h-4 fill-current" />
+                      <span>
+                        {audioKey === 'emergency' && audioStatus === 'paused'
+                          ? 'Sambung'
+                          : 'Main Audio'}
+                      </span>
+                    </button>
+                  )}
 
-            {/* Audio Controls + AYUH, SELAMATKAN HUTAN! CTA */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <div className="flex flex-wrap items-center gap-2.5">
-                {audioKey === 'emergency' && audioStatus === 'playing' ? (
                   <button
                     type="button"
-                    onClick={handlePauseAudio}
-                    className="btn-game-gold btn-game-sm px-4 py-2.5 text-slate-950 font-game text-xs font-black flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Pause className="w-4 h-4 fill-current" />
-                    <span>Jeda</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleResumeAudio(
+                    onClick={() => {
+                      playSFX('click');
+                      playContinuousAudio(
                         'emergency',
                         EMERGENCY_SCRIPT,
                         'Speak in energetic, friendly, clear standard Malaysian Bahasa Melayu (Bahasa Melayu baku Malaysia) like the EcoWorld Chief Command Officer calling primary school hero agents.'
-                      )
-                    }
-                    disabled={audioKey === 'emergency' && audioStatus === 'loading'}
-                    className="btn-game-cyan btn-game-sm px-4 py-2.5 text-slate-950 font-game text-xs font-black flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      );
+                    }}
+                    className="btn-game-slate btn-game-sm px-4 py-2.5 text-cyan-100 font-game text-xs font-bold flex items-center gap-1.5 cursor-pointer"
                   >
-                    <Play className="w-4 h-4 fill-current" />
-                    <span>
-                      {audioKey === 'emergency' && audioStatus === 'paused'
-                        ? 'Sambung'
-                        : 'Main Audio'}
-                    </span>
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Main Semula</span>
                   </button>
-                )}
+                </div>
 
+                {emergencyFinishedOnce ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      stopCurrentAudio();
+                      playSFX('portal');
+                      setStage('explore');
+                    }}
+                    className="btn-game-emerald px-7 py-3.5 text-slate-950 font-game text-sm sm:text-base font-black tracking-wide flex items-center gap-2 cursor-pointer hover:scale-[1.03] transition-transform"
+                  >
+                    <TreePine className="w-5 h-5" />
+                    <span>AYUH, SELAMATKAN HUTAN!</span>
+                  </button>
+                ) : (
+                  <span className="text-xs text-cyan-200 font-semibold">
+                    Dengar arahan penuh terlebih dahulu untuk membuka butang operasi...
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* AKTIVITI 3 – KEPUTUSAN AKHIR EJEN & SUARA EJEN */}
+          {stage === 'decision' && (
+            <div className="portal-glass-card modal-pop-in w-full max-w-6xl rounded-3xl p-5 sm:p-6 text-white space-y-5 border-2 border-purple-400/75 my-auto">
+              <div className="space-y-1 pb-3 border-b border-cyan-400/25">
+                <div className="text-xs font-game font-bold text-amber-300 tracking-wider">
+                  AKTIVITI 3 · KEPUTUSAN AKHIR EJEN PENYELAMAT ECOWORLD
+                </div>
+                <h2 className="font-game text-xl sm:text-2xl font-black text-emerald-300">
+                  Pilih Satu Cadangan & Bentangkan Alasan Kamu!
+                </h2>
+                <p className="text-xs sm:text-sm text-cyan-100 leading-relaxed">
+                  &ldquo;Ejen, kamu sudah mendengar dan meneliti semua cadangan. Sekarang pilih satu cadangan yang paling sesuai untuk menyelamatkan Hutan Harapan!&rdquo;
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+                {PROPOSALS.map((prop) => {
+                  const isChosen = chosenId === prop.id;
+                  return (
+                    <button
+                      key={prop.id}
+                      type="button"
+                      disabled={isRecording}
+                      onClick={() => {
+                        playSFX('click');
+                        setChosenId(prop.id);
+                      }}
+                      className={`p-4 rounded-2xl border-2 text-left transition-all cursor-pointer disabled:opacity-70 ${
+                        isChosen
+                          ? 'border-amber-300 bg-gradient-to-br from-emerald-950/90 to-sky-950/90 shadow-[0_0_24px_rgba(52,211,153,0.45)]'
+                          : 'border-slate-700 bg-slate-950/80 hover:border-cyan-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <span className="font-game text-xs font-black text-amber-300">{prop.code}</span>
+                        {isChosen && (
+                          <span className="text-[11px] font-bold text-emerald-300 flex items-center gap-1">
+                            <CheckCircle2 className="w-4 h-4" /> Pilihan Kamu
+                          </span>
+                        )}
+                      </div>
+                      <div className="font-game text-sm font-black text-white">{prop.title}</div>
+                      <p className="text-xs text-emerald-200 mt-1.5">
+                        <strong>Kelebihan:</strong> {prop.kelebihan}
+                      </p>
+                      <p className="text-xs text-orange-200 mt-1">
+                        <strong>Cabaran:</strong> {prop.cabaran}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {chosenProposal && (
+                <div className="modal-pop-in grid grid-cols-1 lg:grid-cols-12 gap-5 items-center portal-glass-sub rounded-3xl p-5 border-2 border-cyan-400/60">
+                  <div className="lg:col-span-7 space-y-3">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <h3 className="font-game text-lg sm:text-xl font-black text-amber-300">
+                        SUARA EJEN – BENTANGKAN PILIHAN KAMU!
+                      </h3>
+                      <span className="px-3 py-1 rounded-xl bg-emerald-950 border border-emerald-400/60 text-xs font-bold text-emerald-200">
+                        {chosenProposal.shortTitle}
+                      </span>
+                    </div>
+
+                    <p className="text-xs sm:text-sm text-cyan-100">
+                      Jawab ketiga-tiga soalan panduan ini secara spontan menggunakan mikrofon:
+                    </p>
+
+                    <ul className="space-y-2 text-sm sm:text-base text-white bg-slate-950/88 border border-purple-400/45 rounded-2xl p-4 font-medium">
+                      {GUIDING_QUESTIONS.map((q) => (
+                        <li key={q} className="leading-relaxed">
+                          {q}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="lg:col-span-5 flex flex-col items-center justify-center gap-3.5 text-center">
+                    {!recordedAudio ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={isRecording ? stopMicRecording : startMicRecording}
+                          className={`relative w-28 h-28 rounded-full border-4 flex flex-col items-center justify-center gap-1 font-game text-xs font-black shadow-2xl cursor-pointer transition-transform duration-200 ${
+                            isRecording
+                              ? 'bg-gradient-to-br from-rose-500 to-rose-700 border-rose-200 text-white scale-105'
+                              : 'bg-gradient-to-br from-orange-400 via-amber-400 to-yellow-300 border-amber-100 text-slate-950 hover:scale-105'
+                          }`}
+                        >
+                          {isRecording ? (
+                            <>
+                              <Square className="w-8 h-8 fill-current" />
+                              <span>BERHENTI RAKAM</span>
+                            </>
+                          ) : (
+                            <>
+                              <Mic className="w-9 h-9 stroke-[2.4]" />
+                              <span>MULA RAKAM</span>
+                            </>
+                          )}
+                        </button>
+
+                        <div className="flex items-end gap-1.5 h-8">
+                          {voiceMeter.map((v, i) => (
+                            <span
+                              key={i}
+                              style={{ height: isRecording ? `${Math.round(v * 32)}px` : '6px' }}
+                              className={`w-2 rounded-full transition-all duration-100 ${
+                                isRecording
+                                  ? 'bg-gradient-to-t from-emerald-400 to-cyan-300'
+                                  : 'bg-slate-600'
+                              }`}
+                            />
+                          ))}
+                        </div>
+
+                        <p className="text-xs font-semibold text-cyan-100 max-w-xs">
+                          {isRecording
+                            ? `Sedang merakam suara anda (${formatSec(recSeconds)})... Tekan Berhenti Rakam apabila selesai.`
+                            : 'Tekan Mula Rakam dan sampaikan jawapan kamu dengan jelas.'}
+                        </p>
+                      </>
+                    ) : (
+                      <div className="w-full space-y-3 p-4 rounded-2xl bg-slate-950/90 border-2 border-emerald-400/70">
+                        <div className="text-xs font-game font-black text-emerald-300 flex items-center justify-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>RAKAMAN SUARA SEDIA ({formatSec(recordedAudio.duration)})</span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <button
+                            type="button"
+                            onClick={handlePlayRecordedVoice}
+                            className="btn-game-cyan btn-game-sm py-2.5 px-3 text-slate-950 font-game text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <Play className="w-3.5 h-3.5 fill-current" />
+                            <span>{isPlayingBackVoice ? 'Henti Main' : 'Dengar Semula'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleReRecord}
+                            className="btn-game-rose btn-game-sm py-2.5 px-3 text-white font-game text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Rakam Semula</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {voiceError && (
+                <div className="p-3.5 rounded-2xl bg-rose-950/90 border-2 border-rose-400 text-rose-100 text-xs font-semibold flex items-start gap-2">
+                  <AlertTriangle className="w-5 h-5 text-rose-300 shrink-0 mt-0.5" />
+                  <span>{voiceError}</span>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <button
+                  type="button"
+                  disabled={isRecording}
+                  onClick={() => {
+                    playSFX('click');
+                    setStage('explore');
+                  }}
+                  className="btn-game-slate btn-game-sm px-4 py-2.5 text-cyan-100 font-game text-xs font-bold cursor-pointer disabled:opacity-45"
+                >
+                  ← Terokai Semula Cadangan
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!chosenProposal || !recordedAudio || isRecording}
+                  onClick={() => {
+                    playSFX('win');
+                    setStage('victory');
+                  }}
+                  className="btn-game-emerald disabled:opacity-45 px-7 py-3 text-slate-950 font-game text-xs sm:text-sm font-black tracking-wide flex items-center gap-2 cursor-pointer"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>SELESAIKAN MISI HUTAN HARAPAN →</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* PAPARAN KEJAYAAN – HUTAN HARAPAN KEMBALI PULIH! */}
+          {stage === 'victory' && (
+            <div className="portal-glass-card modal-pop-in w-full max-w-4xl rounded-3xl p-6 sm:p-8 text-center text-white space-y-5 border-2 border-amber-300 my-auto">
+              <div className="flex items-center justify-center gap-3">
+                <Star className="w-9 h-9 text-amber-300 fill-amber-300 animate-bounce" />
+                <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-emerald-400 via-cyan-400 to-purple-500 text-slate-950 flex items-center justify-center shadow-[0_0_30px_rgba(52,211,153,0.75)]">
+                  <Award className="w-9 h-9 stroke-[2.3]" />
+                </div>
+                <Star className="w-9 h-9 text-amber-300 fill-amber-300 animate-bounce" />
+              </div>
+
+              <div className="space-y-2">
+                <h2 className="font-game text-3xl sm:text-5xl font-black game-title-gold">
+                  TAHNIAH, EJEN!
+                </h2>
+                <p className="text-sm sm:text-lg font-semibold text-emerald-100 max-w-2xl mx-auto leading-relaxed">
+                  &ldquo;Kamu berjaya menyelesaikan Misi Hutan Harapan! Kamu telah menilai pelbagai cadangan dan memilih strategi berdasarkan kelebihan serta cabarannya. Terima kasih kerana membantu memulihkan EcoWorld!&rdquo;
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-left">
+                <div className="portal-glass-sub rounded-2xl p-3.5 border border-emerald-400/55">
+                  <TreePine className="w-5 h-5 text-emerald-300 mb-1" />
+                  <div className="text-xs font-bold text-white">Hutan kembali menghijau</div>
+                </div>
+                <div className="portal-glass-sub rounded-2xl p-3.5 border border-green-400/55">
+                  <Leaf className="w-5 h-5 text-green-300 mb-1" />
+                  <div className="text-xs font-bold text-white">Pokok tumbuh subur</div>
+                </div>
+                <div className="portal-glass-sub rounded-2xl p-3.5 border border-cyan-400/55">
+                  <Droplets className="w-5 h-5 text-cyan-300 mb-1" />
+                  <div className="text-xs font-bold text-white">Sungai kelihatan bersih</div>
+                </div>
+                <div className="portal-glass-sub rounded-2xl p-3.5 border border-purple-400/55">
+                  <Sparkles className="w-5 h-5 text-purple-300 mb-1" />
+                  <div className="text-xs font-bold text-white">Haiwan kembali ke habitat</div>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-950/90 via-sky-950/90 to-purple-950/90 border-2 border-amber-300/75 flex flex-wrap items-center justify-between gap-3 text-left">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-amber-300 text-slate-950 flex items-center justify-center font-game font-black shadow-lg shrink-0">
+                    <Award className="w-7 h-7" />
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-game font-bold text-amber-300 tracking-wider">
+                      LENCANA DIANUGERAHKAN
+                    </div>
+                    <div className="font-game text-base sm:text-lg font-black text-white">
+                      EJEN STRATEGI CEMERLANG
+                    </div>
+                  </div>
+                </div>
+                <div className="font-mono-num text-xl font-black text-amber-300">
+                  +{mission.maxXp} XP
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <button
                   type="button"
                   onClick={() => {
                     playSFX('click');
-                    playContinuousAudio(
-                      'emergency',
-                      EMERGENCY_SCRIPT,
-                      'Speak in energetic, friendly, clear standard Malaysian Bahasa Melayu (Bahasa Melayu baku Malaysia) like the EcoWorld Chief Command Officer calling primary school hero agents.'
-                    );
+                    handleFinishMission3('map');
                   }}
-                  className="btn-game-slate btn-game-sm px-4 py-2.5 text-cyan-100 font-game text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  className="btn-game-slate py-3.5 px-5 text-cyan-100 font-game text-xs sm:text-sm font-black tracking-wide flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Main Semula</span>
+                  <RefreshCw className="w-4 h-4" />
+                  <span>KEMBALI KE HALAMAN UTAMA</span>
                 </button>
-              </div>
 
-              {emergencyFinishedOnce ? (
                 <button
                   type="button"
                   onClick={() => {
-                    stopCurrentAudio();
-                    playSFX('portal');
-                    setStage('explore');
+                    playSFX('warp');
+                    handleFinishMission3('next_mission');
                   }}
-                  className="btn-game-emerald px-7 py-3.5 text-slate-950 font-game text-sm sm:text-base font-black tracking-wide flex items-center gap-2 cursor-pointer hover:scale-[1.03] transition-transform"
+                  className="btn-game-emerald py-3.5 px-5 text-slate-950 font-game text-xs sm:text-sm font-black tracking-wide flex items-center justify-center gap-2 cursor-pointer hover:scale-[1.03] transition-transform"
                 >
-                  <TreePine className="w-5 h-5" />
-                  <span>AYUH, SELAMATKAN HUTAN!</span>
+                  <Sparkles className="w-4 h-4" />
+                  <span>TERUSKAN KE MISI 4</span>
                 </button>
-              ) : (
-                <span className="text-xs text-cyan-200 font-semibold">
-                  Dengar arahan penuh terlebih dahulu untuk membuka butang operasi...
+              </div>
+            </div>
+          )}
+        </main>
+      )}
+
+      {/* ===================================================================
+          STAGE 2: OPEN 3D PLAYABLE HUTAN HARAPAN EXPLORATION HUD
+         =================================================================== */}
+      {stage === 'explore' && (
+        <>
+          {/* Compact Top-Left Floating Mission Instruction Banner (Center Viewport Open!) */}
+          <div className="fixed top-18 sm:top-20 left-3 sm:left-6 right-3 sm:right-auto z-20 pointer-events-none flex flex-wrap items-start justify-between gap-2">
+            <div className="pointer-events-auto portal-glass-card rounded-2xl px-3.5 py-2.5 max-w-md border border-emerald-400/70">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[10px] sm:text-[11px] font-game font-bold text-emerald-300 tracking-wider">
+                  AKTIVITI 2 · TEROKAI TIGA CADANGAN HUTAN HARAPAN
                 </span>
-              )}
+                <span className="px-2 py-0.5 rounded-lg bg-slate-950/90 border border-amber-400/60 text-[10px] font-game font-black text-amber-300 shrink-0">
+                  CADANGAN DITEROKA: {exploredIds.length} / 3
+                </span>
+              </div>
+              <p className="text-xs font-semibold text-white mt-1">
+                Tekan Setiap Kad untuk Mendengar & Meneliti Cadangan
+              </p>
+              <p className="text-[11px] text-cyan-100/90 mt-0.5">
+                Gerakkan ejen (WASD / Kekunci Anak Panah / Pad Sentuh) atau klik laluan hutan untuk meneroka sungai, air terjun & haiwan!
+              </p>
             </div>
           </div>
-        )}
 
-        {/* =================================================================
-            AKTIVITI 2 – TEROKAI TIGA CADANGAN (LISTENING & UNDERSTANDING)
-           ================================================================= */}
-        {stage === 'explore' && (
-          <div className="portal-glass-card modal-pop-in w-full max-w-6xl rounded-3xl p-5 sm:p-6 text-white space-y-5 border-2 border-emerald-400/75 my-auto">
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-cyan-400/25">
-              <div>
-                <div className="text-xs font-game font-bold text-emerald-300 tracking-wider">
-                  AKTIVITI 2 · TEROKAI TIGA CADANGAN HUTAN HARAPAN
-                </div>
-                <h2 className="font-game text-xl sm:text-2xl font-black text-white">
-                  Tekan Setiap Kad untuk Mendengar & Meneliti Cadangan
-                </h2>
-                <p className="text-xs sm:text-sm text-cyan-100/90 mt-0.5">
-                  Dengar penerangan setiap cadangan serta teliti kelebihan dan cabarannya dengan baik.
-                </p>
-              </div>
-
-              <div className="px-4 py-2 rounded-2xl portal-glass-sub border border-amber-400/60 text-xs font-game font-black text-amber-300">
-                CADANGAN DITEROKA: {exploredIds.length} / 3
-              </div>
+          {/* Nearby 3D Object / Proposal Interaction Prompt */}
+          {nearbySpot && !activeProposal && !natureCard && (
+            <div className="fixed bottom-44 sm:bottom-48 left-1/2 -translate-x-1/2 z-20 pointer-events-auto modal-pop-in">
+              <button
+                type="button"
+                onClick={() => handleInspectSpot(nearbySpot)}
+                className="btn-game-gold px-5 py-2.5 text-slate-950 font-game text-xs sm:text-sm font-black flex items-center gap-2 cursor-pointer shadow-2xl"
+              >
+                <Compass className="w-4 h-4 shrink-0" />
+                <span>[E] {nearbySpot.actionLabel} · {nearbySpot.subtitle}</span>
+              </button>
             </div>
+          )}
 
-            {/* 3 Glowing 3D-Pedestal Strategy Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {PROPOSALS.map((prop) => {
-                const isSelected = activeProposalId === prop.id;
-                const isExplored = exploredIds.includes(prop.id);
-                const isSpeakingThis =
-                  audioKey === `prop_${prop.id}` && audioStatus === 'playing';
-
-                return (
-                  <button
-                    key={prop.id}
-                    type="button"
-                    onClick={() => handleSelectProposalInExplore(prop)}
-                    className={`portal-glass-sub rounded-3xl p-4 text-left flex flex-col justify-between gap-3 border-2 transition-all duration-300 cursor-pointer ${
-                      isSelected
-                        ? `border-amber-300 ring-2 ring-cyan-300 ${prop.glowShadow} -translate-y-1.5 scale-[1.02]`
-                        : isExplored
-                        ? 'border-emerald-400/80'
-                        : `${prop.cardBorder} hover:-translate-y-1`
-                    }`}
-                  >
-                    <div className="space-y-3 w-full">
-                      <div className="flex items-center justify-between gap-2">
-                        <span
-                          className={`px-3 py-1 rounded-xl bg-gradient-to-r ${prop.headerGrad} text-slate-950 font-game text-[11px] font-black shadow`}
-                        >
-                          {prop.code}
-                        </span>
-                        {prop.id === 'A' ? (
-                          <TreePine className="w-5 h-5 text-emerald-300" />
-                        ) : prop.id === 'B' ? (
-                          <Users className="w-5 h-5 text-cyan-300" />
-                        ) : (
-                          <Megaphone className="w-5 h-5 text-purple-300" />
-                        )}
+          {/* Nature Inspection Toast Card (Pokok Agung / Air Terjun Kristal / Haiwan) */}
+          {natureCard && !activeProposal && (
+            <div className="fixed top-24 right-3 sm:right-6 z-20 w-[calc(100%-1.5rem)] max-w-sm pointer-events-auto modal-pop-in">
+              <div className="portal-glass-card rounded-2xl p-4 border-2 border-emerald-400/80 text-white space-y-2 shadow-2xl">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-emerald-400/20 border border-emerald-400/60 flex items-center justify-center text-emerald-300 shrink-0">
+                      <Eye className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-game font-bold text-amber-300 tracking-wider">
+                        PEMERHATIAN ALAM HUTAN HARAPAN
                       </div>
-
-                      <ProposalIllustration id={prop.id} />
-
-                      <h3 className="font-game text-sm sm:text-base font-black text-white leading-snug">
-                        {prop.title}
-                      </h3>
+                      <h4 className="font-game text-sm font-black text-white">{natureCard.title}</h4>
                     </div>
-
-                    <div className="pt-2 border-t border-cyan-400/20 flex items-center justify-between text-xs font-bold">
-                      <span
-                        className={
-                          isSpeakingThis
-                            ? 'text-amber-300 flex items-center gap-1.5'
-                            : isExplored
-                            ? 'text-emerald-300 flex items-center gap-1'
-                            : 'text-cyan-200'
-                        }
-                      >
-                        {isSpeakingThis ? (
-                          <>
-                            <Volume2 className="w-4 h-4 animate-pulse" /> Sedang Dibaca
-                          </>
-                        ) : isExplored ? (
-                          <>
-                            <CheckCircle2 className="w-4 h-4" /> Sudah Diteroka
-                          </>
-                        ) : (
-                          'Tekan untuk dengar'
-                        )}
-                      </span>
-                      <span className="text-cyan-300">▶</span>
-                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setNatureCard(null)}
+                    aria-label="Tutup pemerhatian"
+                    className="p-1 rounded-lg bg-slate-900/80 text-cyan-200 hover:text-white cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
                   </button>
-                );
-              })}
+                </div>
+                <p className="text-xs text-cyan-100 leading-relaxed">{natureCard.subtitle}</p>
+              </div>
             </div>
+          )}
 
-            {/* Larger Active Strategy Detail & Audio Replay Panel */}
-            {activeProposal && (
-              <div className="modal-pop-in rounded-3xl p-5 sm:p-6 bg-slate-950/90 border-2 border-cyan-300/75 grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
-                <div className="lg:col-span-5 space-y-2.5">
-                  <div className="flex items-center justify-between gap-2">
+          {/* Active Proposal Detail Modal Overlay (Preserves 100% Original Content & Audio!) */}
+          {activeProposal && (
+            <div className="fixed inset-0 z-30 flex items-center justify-center p-3 sm:p-6 bg-slate-950/65 pointer-events-auto">
+              <div className="portal-glass-card modal-pop-in w-full max-w-4xl rounded-3xl p-5 sm:p-6 text-white space-y-4 border-2 border-cyan-300/85 max-h-[90vh] overflow-y-auto eco-scroll">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-cyan-400/25">
+                  <div>
                     <span className="text-xs font-game font-black text-amber-300">
                       {activeProposal.code} · PAPARAN BESAR
                     </span>
+                    <h3 className="font-game text-lg sm:text-xl font-black text-white">
+                      {activeProposal.title}
+                    </h3>
+                  </div>
+
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => {
@@ -1303,353 +1719,281 @@ export function Mission3OperationAdventure({
                       <RotateCcw className="w-3.5 h-3.5" />
                       <span>Main Semula Audio</span>
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playSFX('click');
+                        setActiveProposalId(null);
+                      }}
+                      className="btn-game-slate btn-game-sm px-3 py-1.5 text-cyan-100 font-game text-xs font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Tutup</span>
+                    </button>
                   </div>
-                  <ProposalIllustration id={activeProposal.id} large />
                 </div>
 
-                <div className="lg:col-span-7 space-y-3.5">
-                  <h3 className="font-game text-lg sm:text-xl font-black text-white">
-                    {activeProposal.title}
-                  </h3>
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
+                  <div className="lg:col-span-5">
+                    <ProposalIllustration id={activeProposal.id} large />
+                  </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                    <div className="p-4 rounded-2xl bg-emerald-950/75 border-2 border-emerald-400/70 space-y-1.5">
-                      <div className="flex items-center gap-2 font-game text-sm font-black text-emerald-300">
-                        <CheckCircle2 className="w-5 h-5" />
-                        <span>KELEBIHAN</span>
+                  <div className="lg:col-span-7 space-y-3.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                      <div className="p-4 rounded-2xl bg-emerald-950/80 border-2 border-emerald-400/70 space-y-1.5">
+                        <div className="flex items-center gap-2 font-game text-sm font-black text-emerald-300">
+                          <CheckCircle2 className="w-5 h-5" />
+                          <span>KELEBIHAN</span>
+                        </div>
+                        <p className="text-sm sm:text-base text-emerald-50 leading-relaxed font-medium">
+                          {activeProposal.kelebihan}
+                        </p>
                       </div>
-                      <p className="text-sm sm:text-base text-emerald-50 leading-relaxed font-medium">
-                        {activeProposal.kelebihan}
-                      </p>
-                    </div>
 
-                    <div className="p-4 rounded-2xl bg-orange-950/70 border-2 border-orange-400/70 space-y-1.5">
-                      <div className="flex items-center gap-2 font-game text-sm font-black text-orange-300">
-                        <AlertTriangle className="w-5 h-5" />
-                        <span>CABARAN</span>
+                      <div className="p-4 rounded-2xl bg-orange-950/75 border-2 border-orange-400/70 space-y-1.5">
+                        <div className="flex items-center gap-2 font-game text-sm font-black text-orange-300">
+                          <AlertTriangle className="w-5 h-5" />
+                          <span>CABARAN</span>
+                        </div>
+                        <p className="text-sm sm:text-base text-orange-50 leading-relaxed font-medium">
+                          {activeProposal.cabaran}
+                        </p>
                       </div>
-                      <p className="text-sm sm:text-base text-orange-50 leading-relaxed font-medium">
-                        {activeProposal.cabaran}
-                      </p>
                     </div>
-                  </div>
 
-                  {audioNotice && (
-                    <p className="text-xs text-amber-200">{audioNotice}</p>
-                  )}
-                </div>
-              </div>
-            )}
+                    {audioNotice && <p className="text-xs text-amber-200">{audioNotice}</p>}
 
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <p className="text-xs sm:text-sm text-cyan-100">
-                {exploredIds.length < 3
-                  ? `Sila tekan dan teroka kesemua 3 cadangan di atas dahulu (${3 - exploredIds.length} lagi berbaki).`
-                  : 'Hebat! Kamu telah meneroka kesemua 3 cadangan. Kini masa untuk membuat pilihan terbaik!'}
-              </p>
-
-              <button
-                type="button"
-                disabled={exploredIds.length < 3}
-                onClick={() => {
-                  stopCurrentAudio();
-                  playSFX('portal');
-                  setStage('decision');
-                }}
-                className="btn-game-gold disabled:opacity-45 px-7 py-3 text-slate-950 font-game text-xs sm:text-sm font-black tracking-wide cursor-pointer"
-              >
-                PILIH CADANGAN TERBAIK →
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* =================================================================
-            AKTIVITI 3 – KEPUTUSAN AKHIR EJEN & SUARA EJEN
-           ================================================================= */}
-        {stage === 'decision' && (
-          <div className="portal-glass-card modal-pop-in w-full max-w-6xl rounded-3xl p-5 sm:p-6 text-white space-y-5 border-2 border-purple-400/75 my-auto">
-            <div className="space-y-1 pb-3 border-b border-cyan-400/25">
-              <div className="text-xs font-game font-bold text-amber-300 tracking-wider">
-                AKTIVITI 3 · KEPUTUSAN AKHIR EJEN PENYELAMAT ECOWORLD
-              </div>
-              <h2 className="font-game text-xl sm:text-2xl font-black text-emerald-300">
-                Pilih Satu Cadangan & Bentangkan Alasan Kamu!
-              </h2>
-              <p className="text-xs sm:text-sm text-cyan-100 leading-relaxed">
-                &ldquo;Ejen, kamu sudah mendengar dan meneliti semua cadangan. Sekarang pilih satu cadangan yang paling sesuai untuk menyelamatkan Hutan Harapan!&rdquo;
-              </p>
-            </div>
-
-            {/* 3 Selectable Proposal Cards (Freedom to pick any!) */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
-              {PROPOSALS.map((prop) => {
-                const isChosen = chosenId === prop.id;
-                return (
-                  <button
-                    key={prop.id}
-                    type="button"
-                    disabled={isRecording}
-                    onClick={() => {
-                      playSFX('click');
-                      setChosenId(prop.id);
-                    }}
-                    className={`p-4 rounded-2xl border-2 text-left transition-all cursor-pointer disabled:opacity-70 ${
-                      isChosen
-                        ? 'border-amber-300 bg-gradient-to-br from-emerald-950/90 to-sky-950/90 shadow-[0_0_24px_rgba(52,211,153,0.45)]'
-                        : 'border-slate-700 bg-slate-950/80 hover:border-cyan-300'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <span className="font-game text-xs font-black text-amber-300">{prop.code}</span>
-                      {isChosen && (
-                        <span className="text-[11px] font-bold text-emerald-300 flex items-center gap-1">
-                          <CheckCircle2 className="w-4 h-4" /> Pilihan Kamu
-                        </span>
-                      )}
-                    </div>
-                    <div className="font-game text-sm font-black text-white">{prop.title}</div>
-                    <p className="text-xs text-emerald-200 mt-1.5">
-                      <strong>Kelebihan:</strong> {prop.kelebihan}
-                    </p>
-                    <p className="text-xs text-orange-200 mt-1">
-                      <strong>Cabaran:</strong> {prop.cabaran}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Voice Presentation Studio: SUARA EJEN – BENTANGKAN PILIHAN KAMU! */}
-            {chosenProposal && (
-              <div className="modal-pop-in grid grid-cols-1 lg:grid-cols-12 gap-5 items-center portal-glass-sub rounded-3xl p-5 border-2 border-cyan-400/60">
-                <div className="lg:col-span-7 space-y-3">
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <h3 className="font-game text-lg sm:text-xl font-black text-amber-300">
-                      SUARA EJEN – BENTANGKAN PILIHAN KAMU!
-                    </h3>
-                    <span className="px-3 py-1 rounded-xl bg-emerald-950 border border-emerald-400/60 text-xs font-bold text-emerald-200">
-                      {chosenProposal.shortTitle}
-                    </span>
-                  </div>
-
-                  <p className="text-xs sm:text-sm text-cyan-100">
-                    Jawab ketiga-tiga soalan panduan ini secara spontan menggunakan mikrofon:
-                  </p>
-
-                  <ul className="space-y-2 text-sm sm:text-base text-white bg-slate-950/88 border border-purple-400/45 rounded-2xl p-4 font-medium">
-                    {GUIDING_QUESTIONS.map((q) => (
-                      <li key={q} className="leading-relaxed">
-                        {q}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                {/* Microphone Studio Controls */}
-                <div className="lg:col-span-5 flex flex-col items-center justify-center gap-3.5 text-center">
-                  {!recordedAudio ? (
-                    <>
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                       <button
                         type="button"
-                        onClick={isRecording ? stopMicRecording : startMicRecording}
-                        className={`relative w-28 h-28 rounded-full border-4 flex flex-col items-center justify-center gap-1 font-game text-xs font-black shadow-2xl cursor-pointer transition-transform duration-200 ${
-                          isRecording
-                            ? 'bg-gradient-to-br from-rose-500 to-rose-700 border-rose-200 text-white scale-105'
-                            : 'bg-gradient-to-br from-orange-400 via-amber-400 to-yellow-300 border-amber-100 text-slate-950 hover:scale-105'
-                        }`}
+                        onClick={() => {
+                          playSFX('click');
+                          setActiveProposalId(null);
+                        }}
+                        className="btn-game-teal btn-game-sm px-4 py-2 text-slate-950 font-game text-xs font-black cursor-pointer"
                       >
-                        {isRecording ? (
-                          <>
-                            <Square className="w-8 h-8 fill-current" />
-                            <span>BERHENTI RAKAM</span>
-                          </>
-                        ) : (
-                          <>
-                            <Mic className="w-9 h-9 stroke-[2.4]" />
-                            <span>MULA RAKAM</span>
-                          </>
-                        )}
+                        Tutup & Terus Teroka Hutan
                       </button>
 
-                      <div className="flex items-end gap-1.5 h-8">
-                        {voiceMeter.map((v, i) => (
-                          <span
-                            key={i}
-                            style={{ height: isRecording ? `${Math.round(v * 32)}px` : '6px' }}
-                            className={`w-2 rounded-full transition-all duration-100 ${
-                              isRecording
-                                ? 'bg-gradient-to-t from-emerald-400 to-cyan-300'
-                                : 'bg-slate-600'
-                            }`}
-                          />
-                        ))}
-                      </div>
-
-                      <p className="text-xs font-semibold text-cyan-100 max-w-xs">
-                        {isRecording
-                          ? `Sedang merakam suara anda (${formatSec(recSeconds)})... Tekan Berhenti Rakam apabila selesai.`
-                          : 'Tekan Mula Rakam dan sampaikan jawapan kamu dengan jelas.'}
-                      </p>
-                    </>
-                  ) : (
-                    <div className="w-full space-y-3 p-4 rounded-2xl bg-slate-950/90 border-2 border-emerald-400/70">
-                      <div className="text-xs font-game font-black text-emerald-300 flex items-center justify-center gap-1.5">
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span>RAKAMAN SUARA SEDIA ({formatSec(recordedAudio.duration)})</span>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2.5">
+                      {exploredIds.length >= 3 && (
                         <button
                           type="button"
-                          onClick={handlePlayRecordedVoice}
-                          className="btn-game-cyan btn-game-sm py-2.5 px-3 text-slate-950 font-game text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer"
+                          onClick={() => {
+                            stopCurrentAudio();
+                            playSFX('portal');
+                            setActiveProposalId(null);
+                            setStage('decision');
+                          }}
+                          className="btn-game-gold btn-game-sm px-5 py-2 text-slate-950 font-game text-xs font-black cursor-pointer"
                         >
-                          <Play className="w-3.5 h-3.5 fill-current" />
-                          <span>{isPlayingBackVoice ? 'Henti Main' : 'Dengar Semula'}</span>
+                          PILIH CADANGAN TERBAIK →
                         </button>
-
-                        <button
-                          type="button"
-                          onClick={handleReRecord}
-                          className="btn-game-rose btn-game-sm py-2.5 px-3 text-white font-game text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          <span>Rakam Semula</span>
-                        </button>
-                      </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {voiceError && (
-              <div className="p-3.5 rounded-2xl bg-rose-950/90 border-2 border-rose-400 text-rose-100 text-xs font-semibold flex items-start gap-2">
-                <AlertTriangle className="w-5 h-5 text-rose-300 shrink-0 mt-0.5" />
-                <span>{voiceError}</span>
-              </div>
-            )}
-
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <button
-                type="button"
-                disabled={isRecording}
-                onClick={() => {
-                  playSFX('click');
-                  setStage('explore');
-                }}
-                className="btn-game-slate btn-game-sm px-4 py-2.5 text-cyan-100 font-game text-xs font-bold cursor-pointer disabled:opacity-45"
-              >
-                ← Terokai Semula Cadangan
-              </button>
-
-              <button
-                type="button"
-                disabled={!chosenProposal || !recordedAudio || isRecording}
-                onClick={() => {
-                  playSFX('win');
-                  setStage('victory');
-                }}
-                className="btn-game-emerald disabled:opacity-45 px-7 py-3 text-slate-950 font-game text-xs sm:text-sm font-black tracking-wide flex items-center gap-2 cursor-pointer"
-              >
-                <ShieldCheck className="w-4 h-4" />
-                <span>SELESAIKAN MISI HUTAN HARAPAN →</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* =================================================================
-            PAPARAN KEJAYAAN – HUTAN HARAPAN KEMBALI PULIH!
-           ================================================================= */}
-        {stage === 'victory' && (
-          <div className="portal-glass-card modal-pop-in w-full max-w-4xl rounded-3xl p-6 sm:p-8 text-center text-white space-y-5 border-2 border-amber-300 my-auto">
-            <div className="flex items-center justify-center gap-3">
-              <Star className="w-9 h-9 text-amber-300 fill-amber-300 animate-bounce" />
-              <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-emerald-400 via-cyan-400 to-purple-500 text-slate-950 flex items-center justify-center shadow-[0_0_30px_rgba(52,211,153,0.75)]">
-                <Award className="w-9 h-9 stroke-[2.3]" />
-              </div>
-              <Star className="w-9 h-9 text-amber-300 fill-amber-300 animate-bounce" />
-            </div>
-
-            <div className="space-y-2">
-              <h2 className="font-game text-3xl sm:text-5xl font-black game-title-gold">
-                TAHNIAH, EJEN!
-              </h2>
-              <p className="text-sm sm:text-lg font-semibold text-emerald-100 max-w-2xl mx-auto leading-relaxed">
-                &ldquo;Kamu berjaya menyelesaikan Misi Hutan Harapan! Kamu telah menilai pelbagai cadangan dan memilih strategi berdasarkan kelebihan serta cabarannya. Terima kasih kerana membantu memulihkan EcoWorld!&rdquo;
-              </p>
-            </div>
-
-            {/* Restored Hutan Harapan Visual Status Cards */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-left">
-              <div className="portal-glass-sub rounded-2xl p-3.5 border border-emerald-400/55">
-                <TreePine className="w-5 h-5 text-emerald-300 mb-1" />
-                <div className="text-xs font-bold text-white">Hutan kembali menghijau</div>
-              </div>
-              <div className="portal-glass-sub rounded-2xl p-3.5 border border-green-400/55">
-                <Leaf className="w-5 h-5 text-green-300 mb-1" />
-                <div className="text-xs font-bold text-white">Pokok tumbuh subur</div>
-              </div>
-              <div className="portal-glass-sub rounded-2xl p-3.5 border border-cyan-400/55">
-                <Droplets className="w-5 h-5 text-cyan-300 mb-1" />
-                <div className="text-xs font-bold text-white">Sungai kelihatan bersih</div>
-              </div>
-              <div className="portal-glass-sub rounded-2xl p-3.5 border border-purple-400/55">
-                <Sparkles className="w-5 h-5 text-purple-300 mb-1" />
-                <div className="text-xs font-bold text-white">Haiwan kembali ke habitat</div>
-              </div>
-            </div>
-
-            {/* Badge Awarded Banner */}
-            <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-950/90 via-sky-950/90 to-purple-950/90 border-2 border-amber-300/75 flex flex-wrap items-center justify-between gap-3 text-left">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-2xl bg-amber-300 text-slate-950 flex items-center justify-center font-game font-black shadow-lg shrink-0">
-                  <Award className="w-7 h-7" />
-                </div>
-                <div>
-                  <div className="text-[11px] font-game font-bold text-amber-300 tracking-wider">
-                    LENCANA DIANUGERAHKAN
-                  </div>
-                  <div className="font-game text-base sm:text-lg font-black text-white">
-                    EJEN STRATEGI CEMERLANG
                   </div>
                 </div>
               </div>
-              <div className="font-mono-num text-xl font-black text-amber-300">
-                +{mission.maxXp} XP
-              </div>
             </div>
+          )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          {/* Sleek Collapsible Bottom Exploration & Strategy Control Dock */}
+          <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-20 w-[calc(100%-1.5rem)] max-w-6xl pointer-events-auto">
+            <div className="flex justify-center mb-1.5">
               <button
                 type="button"
                 onClick={() => {
                   playSFX('click');
-                  handleFinishMission3('map');
+                  setDockOpen((v) => !v);
                 }}
-                className="btn-game-slate py-3.5 px-5 text-cyan-100 font-game text-xs sm:text-sm font-black tracking-wide flex items-center justify-center gap-2 cursor-pointer"
+                className="px-3.5 py-1 rounded-xl portal-glass-card border border-cyan-400/60 text-[11px] font-game font-bold text-cyan-100 hover:text-white flex items-center gap-1.5 cursor-pointer"
               >
-                <RefreshCw className="w-4 h-4" />
-                <span>KEMBALI KE HALAMAN UTAMA</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  playSFX('warp');
-                  handleFinishMission3('next_mission');
-                }}
-                className="btn-game-emerald py-3.5 px-5 text-slate-950 font-game text-xs sm:text-sm font-black tracking-wide flex items-center justify-center gap-2 cursor-pointer hover:scale-[1.03] transition-transform"
-              >
-                <Sparkles className="w-4 h-4" />
-                <span>TERUSKAN KE MISI 4</span>
+                {dockOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+                <span>{dockOpen ? 'Sembunyi Panel Kawalan' : 'Buka Panel Kawalan & Cadangan'}</span>
+                <span className="text-amber-300 font-black">({exploredIds.length}/3)</span>
               </button>
             </div>
+
+            {dockOpen && (
+              <div className="portal-glass-card rounded-3xl p-3 sm:p-4 border-2 border-emerald-400/75 text-white space-y-3">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
+                  {/* Left: Kid-Friendly D-Pad, Walk/Run & Camera Controls */}
+                  <div className="lg:col-span-4 flex items-center justify-between sm:justify-start gap-3 bg-slate-950/75 rounded-2xl p-2.5 border border-cyan-400/35">
+                    {/* Touch / Mouse D-Pad */}
+                    <div className="grid grid-cols-3 gap-1 w-28 shrink-0">
+                      <div />
+                      <button
+                        type="button"
+                        aria-label="Gerak ke hadapan"
+                        onPointerDown={() => setDpadDir(0, -1)}
+                        onPointerUp={() => setDpadDir(0, 0)}
+                        onPointerLeave={() => setDpadDir(0, 0)}
+                        onPointerCancel={() => setDpadDir(0, 0)}
+                        className="btn-game-slate btn-game-sm h-8 flex items-center justify-center text-cyan-200 cursor-pointer"
+                      >
+                        <ArrowUp className="w-4 h-4" />
+                      </button>
+                      <div />
+                      <button
+                        type="button"
+                        aria-label="Gerak ke kiri"
+                        onPointerDown={() => setDpadDir(-1, 0)}
+                        onPointerUp={() => setDpadDir(0, 0)}
+                        onPointerLeave={() => setDpadDir(0, 0)}
+                        onPointerCancel={() => setDpadDir(0, 0)}
+                        className="btn-game-slate btn-game-sm h-8 flex items-center justify-center text-cyan-200 cursor-pointer"
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Gerak ke belakang"
+                        onPointerDown={() => setDpadDir(0, 1)}
+                        onPointerUp={() => setDpadDir(0, 0)}
+                        onPointerLeave={() => setDpadDir(0, 0)}
+                        onPointerCancel={() => setDpadDir(0, 0)}
+                        className="btn-game-slate btn-game-sm h-8 flex items-center justify-center text-cyan-200 cursor-pointer"
+                      >
+                        <ArrowDown className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Gerak ke kanan"
+                        onPointerDown={() => setDpadDir(1, 0)}
+                        onPointerUp={() => setDpadDir(0, 0)}
+                        onPointerLeave={() => setDpadDir(0, 0)}
+                        onPointerCancel={() => setDpadDir(0, 0)}
+                        className="btn-game-slate btn-game-sm h-8 flex items-center justify-center text-cyan-200 cursor-pointer"
+                      >
+                        <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Walk/Run & Camera Perspective Switches */}
+                    <div className="flex flex-col gap-1.5 flex-1 min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          playSFX('click');
+                          setRunMode((r) => !r);
+                        }}
+                        className={`px-2.5 py-1.5 rounded-xl font-game text-[11px] font-black flex items-center justify-center gap-1.5 border cursor-pointer transition-colors ${
+                          runMode
+                            ? 'bg-amber-400 text-slate-950 border-amber-200'
+                            : 'bg-slate-900 text-emerald-200 border-emerald-400/50'
+                        }`}
+                      >
+                        {runMode ? <Zap className="w-3.5 h-3.5" /> : <Footprints className="w-3.5 h-3.5" />}
+                        <span>{runMode ? 'Mod: Lari (Shift)' : 'Mod: Berjalan'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={toggleCameraPreset}
+                        className="px-2.5 py-1.5 rounded-xl bg-slate-900 border border-cyan-400/50 font-game text-[11px] font-bold text-cyan-100 hover:text-white flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Camera className="w-3.5 h-3.5 text-cyan-300" />
+                        <span>{cameraPreset === 'follow' ? 'Kamera: Ikut Ejen' : 'Kamera: Pemandangan Luas'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Center: 3 Interactive Proposal Cards (Walks Ejen to Station + Plays Original Audio!) */}
+                  <div className="lg:col-span-8 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    {PROPOSALS.map((prop) => {
+                      const isSelected = activeProposalId === prop.id;
+                      const isExplored = exploredIds.includes(prop.id);
+                      const isSpeakingThis =
+                        audioKey === `prop_${prop.id}` && audioStatus === 'playing';
+
+                      return (
+                        <button
+                          key={prop.id}
+                          type="button"
+                          onClick={() => handleSelectProposalInExplore(prop)}
+                          className={`portal-glass-sub rounded-2xl p-2.5 text-left flex flex-col justify-between gap-2 border-2 transition-all duration-200 cursor-pointer ${
+                            isSelected
+                              ? `border-amber-300 ring-2 ring-cyan-300 ${prop.glowShadow}`
+                              : isExplored
+                              ? 'border-emerald-400/80'
+                              : `${prop.cardBorder} hover:-translate-y-0.5`
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1.5">
+                            <span
+                              className={`px-2 py-0.5 rounded-lg bg-gradient-to-r ${prop.headerGrad} text-slate-950 font-game text-[10px] font-black shadow`}
+                            >
+                              {prop.code}
+                            </span>
+                            {prop.id === 'A' ? (
+                              <TreePine className="w-4 h-4 text-emerald-300" />
+                            ) : prop.id === 'B' ? (
+                              <Users className="w-4 h-4 text-cyan-300" />
+                            ) : (
+                              <Megaphone className="w-4 h-4 text-purple-300" />
+                            )}
+                          </div>
+
+                          <div className="font-game text-xs font-black text-white leading-tight line-clamp-2">
+                            {prop.title}
+                          </div>
+
+                          <div className="pt-1 border-t border-cyan-400/20 flex items-center justify-between text-[11px] font-bold">
+                            <span
+                              className={
+                                isSpeakingThis
+                                  ? 'text-amber-300 flex items-center gap-1'
+                                  : isExplored
+                                  ? 'text-emerald-300 flex items-center gap-1'
+                                  : 'text-cyan-200'
+                              }
+                            >
+                              {isSpeakingThis ? (
+                                <>
+                                  <Volume2 className="w-3.5 h-3.5" /> Sedang Dibaca
+                                </>
+                              ) : isExplored ? (
+                                <>
+                                  <CheckCircle2 className="w-3.5 h-3.5" /> Sudah Diteroka
+                                </>
+                              ) : (
+                                'Tekan untuk dengar'
+                              )}
+                            </span>
+                            <span className="text-cyan-300">▶</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Bottom Action Strip */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-cyan-400/20">
+                  <p className="text-xs text-cyan-100">
+                    {exploredIds.length < 3
+                      ? `Sila tekan dan teroka kesemua 3 cadangan di atas dahulu (${3 - exploredIds.length} lagi berbaki).`
+                      : 'Hebat! Kamu telah meneroka kesemua 3 cadangan. Kini masa untuk membuat pilihan terbaik!'}
+                  </p>
+
+                  <button
+                    type="button"
+                    disabled={exploredIds.length < 3}
+                    onClick={() => {
+                      stopCurrentAudio();
+                      playSFX('portal');
+                      setStage('decision');
+                    }}
+                    className="btn-game-gold disabled:opacity-45 px-5 py-2 text-slate-950 font-game text-xs sm:text-sm font-black tracking-wide cursor-pointer"
+                  >
+                    PILIH CADANGAN TERBAIK →
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </main>
+        </>
+      )}
     </div>
   );
 }

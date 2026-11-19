@@ -22,6 +22,8 @@ export interface HumanAgentRig {
   rightElbow: THREE.Group;
   leftHip: THREE.Group;
   rightHip: THREE.Group;
+  leftKnee: THREE.Group;
+  rightKnee: THREE.Group;
   chestEmblem: THREE.Mesh;
   fxGroup: THREE.Group;
   fxItems: THREE.Object3D[];
@@ -39,6 +41,7 @@ export interface AgentAnimState {
   selected?: boolean;
   triggerWelcome?: boolean;
   phaseOffset?: number;
+  sitAmount?: number;
 }
 
 interface AgentStyleSpec {
@@ -363,58 +366,67 @@ export function buildHumanEcoAgent(
   // ==========================
   // LEGS & BOOTS (Articulated)
   // ==========================
-  function buildLeg(side: -1 | 1): THREE.Group {
+  function buildLeg(side: -1 | 1): { hipPivot: THREE.Group; kneePivot: THREE.Group } {
     const hipPivot = new THREE.Group();
     hipPivot.position.set(side * 0.17, 0.78 + baseLift, 0);
 
-    // Thigh + Knee + Shin
+    // Thigh
     const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.115, 0.26, 6, 12), pantsMat);
     thigh.position.y = -0.18;
     thigh.castShadow = true;
     hipPivot.add(thigh);
 
+    // Knee Pivot + Lower Leg + Boot (y = -0.34 from hipPivot)
+    const kneePivot = new THREE.Group();
+    kneePivot.position.set(0, -0.34, 0);
+    hipPivot.add(kneePivot);
+
     const kneePad = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.12, 0.18), trimMat);
-    kneePad.position.set(0, -0.34, 0.05);
-    hipPivot.add(kneePad);
+    kneePad.position.set(0, 0, 0.05);
+    kneePivot.add(kneePad);
 
     // Futuristic Two-Tone Boot
     const bootShaft = new THREE.Mesh(
       new THREE.CylinderGeometry(0.125, 0.135, 0.28, 14),
       avatarId === 'rimba' ? trimMat : spec.isFemale ? trimMat : suitMat
     );
-    bootShaft.position.y = -0.52;
+    bootShaft.position.y = -0.18;
     bootShaft.castShadow = true;
-    hipPivot.add(bootShaft);
+    kneePivot.add(bootShaft);
 
     const bootCuff = new THREE.Mesh(
       new THREE.TorusGeometry(0.125, 0.025, 8, 18),
       avatarId === 'tirta' || avatarId === 'suara' ? suitMat : glowMat
     );
     bootCuff.rotation.x = Math.PI / 2;
-    bootCuff.position.y = -0.39;
-    hipPivot.add(bootCuff);
+    bootCuff.position.y = -0.05;
+    kneePivot.add(bootCuff);
 
     const bootFoot = new THREE.Mesh(
       new THREE.CapsuleGeometry(0.115, 0.16, 6, 12),
       avatarId === 'rimba' ? suitMat : trimMat
     );
     bootFoot.rotation.x = Math.PI / 2;
-    bootFoot.position.set(0, -0.68, 0.06);
+    bootFoot.position.set(0, -0.34, 0.06);
     bootFoot.castShadow = true;
-    hipPivot.add(bootFoot);
+    kneePivot.add(bootFoot);
 
     const bootSole = new THREE.Mesh(
       new THREE.BoxGeometry(0.24, 0.05, 0.34),
       avatarId === 'rimba' ? beltMat : silverMat
     );
-    bootSole.position.set(0, -0.75, 0.06);
-    hipPivot.add(bootSole);
+    bootSole.position.set(0, -0.41, 0.06);
+    kneePivot.add(bootSole);
 
-    return hipPivot;
+    return { hipPivot, kneePivot };
   }
 
-  const leftHip = buildLeg(-1);
-  const rightHip = buildLeg(1);
+  const leftLegRig = buildLeg(-1);
+  const rightLegRig = buildLeg(1);
+  const leftHip = leftLegRig.hipPivot;
+  const rightHip = rightLegRig.hipPivot;
+  const leftKnee = leftLegRig.kneePivot;
+  const rightKnee = rightLegRig.kneePivot;
   bodyRoot.add(leftHip, rightHip);
 
   // ==========================
@@ -1035,6 +1047,8 @@ export function buildHumanEcoAgent(
     rightElbow: rightArmRig.elbow,
     leftHip,
     rightHip,
+    leftKnee,
+    rightKnee,
     chestEmblem,
     fxGroup,
     fxItems,
@@ -1092,11 +1106,15 @@ export function animateHumanAgent(
   const breath = Math.sin(t * 2.3) * 0.022;
   rig.torsoGroup.scale.set(1 + breath * 0.45, 1 + breath * 0.6, 1 + breath * 0.55);
 
-  if (state.isMoving) {
+  const sit = THREE.MathUtils.clamp(state.sitAmount ?? 0, 0, 1);
+
+  if (state.isMoving && sit < 0.15) {
     // Expressive Walk Cycle
     const swing = Math.sin(elapsed * 11.5) * 0.58;
     rig.leftHip.rotation.x = swing;
     rig.rightHip.rotation.x = -swing;
+    rig.leftKnee.rotation.x = Math.max(0, -swing * 0.45);
+    rig.rightKnee.rotation.x = Math.max(0, swing * 0.45);
     rig.leftShoulder.rotation.x = -swing * 0.72;
     rig.rightShoulder.rotation.x = swing * 0.72;
     rig.leftShoulder.rotation.z = -0.14;
@@ -1107,43 +1125,52 @@ export function animateHumanAgent(
     rig.torsoGroup.rotation.y = Math.sin(elapsed * 11.5) * 0.08;
     rig.headGroup.rotation.set(0, Math.sin(elapsed * 11.5) * -0.05, 0);
   } else {
-    // Idle Pose + Welcoming Wave + Hover Flourish
-    const isWelcoming = rig.welcomeTimer > 0;
-    const waveBlend = isWelcoming ? Math.min(1, rig.welcomeTimer * 2.2) * Math.min(1, (2.4 - rig.welcomeTimer) * 4 + 0.35) : 0;
+    // Idle Pose + Seated Broadcast Pose + Welcoming Wave + Hover Flourish
+    const isWelcoming = rig.welcomeTimer > 0 && sit < 0.25;
+    const waveBlend = isWelcoming
+      ? Math.min(1, rig.welcomeTimer * 2.2) * Math.min(1, (2.4 - rig.welcomeTimer) * 4 + 0.35)
+      : 0;
 
-    // Gentle breathing bounce + excited hover perk
-    const idleBounce = Math.sin(t * 2.3) * 0.016 + rig.hoverAmount * Math.abs(Math.sin(t * 5.2)) * 0.05;
-    rig.bodyRoot.position.y = THREE.MathUtils.damp(rig.bodyRoot.position.y, idleBounce, 10, dt);
+    // Smooth vertical transition between standing idle and seated chair height
+    const standingBounce =
+      Math.sin(t * 2.3) * 0.016 + rig.hoverAmount * Math.abs(Math.sin(t * 5.2)) * 0.05;
+    const seatedY = -0.24 + Math.sin(t * 2.1) * 0.006;
+    const targetBodyY = THREE.MathUtils.lerp(standingBounce, seatedY, sit);
+    rig.bodyRoot.position.y = THREE.MathUtils.damp(rig.bodyRoot.position.y, targetBodyY, 10, dt);
 
-    // Legs settle cleanly
-    rig.leftHip.rotation.x = THREE.MathUtils.damp(rig.leftHip.rotation.x, 0, 8, dt);
-    rig.rightHip.rotation.x = THREE.MathUtils.damp(rig.rightHip.rotation.x, 0, 8, dt);
+    // Legs bend cleanly at hip & knee when sitting
+    const targetHipX = THREE.MathUtils.lerp(0, -1.42, sit);
+    const targetKneeX = THREE.MathUtils.lerp(0, 1.38, sit);
+    rig.leftHip.rotation.x = THREE.MathUtils.damp(rig.leftHip.rotation.x, targetHipX, 9, dt);
+    rig.rightHip.rotation.x = THREE.MathUtils.damp(rig.rightHip.rotation.x, targetHipX, 9, dt);
+    rig.leftKnee.rotation.x = THREE.MathUtils.damp(rig.leftKnee.rotation.x, targetKneeX, 9, dt);
+    rig.rightKnee.rotation.x = THREE.MathUtils.damp(rig.rightKnee.rotation.x, targetKneeX, 9, dt);
 
-    // Expressive head tilt & gentle look
-    const headTiltZ = Math.sin(t * 1.4) * 0.05 + waveBlend * 0.12 + rig.hoverAmount * 0.06;
-    const headYaw = Math.sin(t * 0.9) * 0.09;
+    // Expressive head tilt & gentle broadcast nod
+    const headTiltZ =
+      (Math.sin(t * 1.4) * 0.05 + waveBlend * 0.12 + rig.hoverAmount * 0.06) * (1 - sit * 0.45);
+    const headYaw = Math.sin(t * 0.9) * (sit > 0.5 ? 0.11 : 0.09);
     rig.headGroup.rotation.z = THREE.MathUtils.damp(rig.headGroup.rotation.z, headTiltZ, 7, dt);
     rig.headGroup.rotation.y = THREE.MathUtils.damp(rig.headGroup.rotation.y, headYaw, 7, dt);
     rig.headGroup.rotation.x = THREE.MathUtils.damp(
       rig.headGroup.rotation.x,
-      Math.sin(t * 2.3) * 0.025 - rig.hoverAmount * 0.05,
+      Math.sin(t * 2.3) * 0.025 - rig.hoverAmount * 0.05 + sit * 0.04,
       7,
       dt
     );
 
-    // Unique Welcoming Arm Animations per Character!
+    // Arm animations: conversational podcast host gesture when seated, or standing welcome wave
     const waveOsc = Math.sin(t * 8.5) * 0.38;
-    let targetRShoulderZ = 0.18 + Math.sin(t * 2.0) * 0.04;
-    let targetRShoulderX = -0.08;
-    let targetRElbowX = -0.25;
-    let targetLShoulderZ = -0.18 - Math.sin(t * 2.0) * 0.04;
-    let targetLShoulderX = -0.08;
-    let targetLElbowX = -0.25;
+    let targetRShoulderZ = THREE.MathUtils.lerp(0.18 + Math.sin(t * 2.0) * 0.04, 0.22, sit);
+    let targetRShoulderX = THREE.MathUtils.lerp(-0.08, -0.44 + Math.sin(t * 1.9) * 0.06, sit);
+    let targetRElbowX = THREE.MathUtils.lerp(-0.25, -0.78 + Math.cos(t * 2.2) * 0.08, sit);
+    let targetLShoulderZ = THREE.MathUtils.lerp(-0.18 - Math.sin(t * 2.0) * 0.04, -0.22, sit);
+    let targetLShoulderX = THREE.MathUtils.lerp(-0.08, -0.42 - Math.sin(t * 1.7) * 0.05, sit);
+    let targetLElbowX = THREE.MathUtils.lerp(-0.25, -0.75, sit);
 
-    if (isWelcoming || rig.hoverAmount > 0.2) {
+    if (isWelcoming || (rig.hoverAmount > 0.2 && sit < 0.3)) {
       const act = Math.max(waveBlend, rig.hoverAmount * 0.85);
       if (rig.avatarId === 'tirta') {
-        // Gentle friendly water-guardian wave + open welcoming left palm
         targetRShoulderZ = THREE.MathUtils.lerp(targetRShoulderZ, 2.35 + waveOsc, act);
         targetRShoulderX = THREE.MathUtils.lerp(targetRShoulderX, -0.35, act);
         targetRElbowX = THREE.MathUtils.lerp(targetRElbowX, -0.45, act);
@@ -1151,21 +1178,18 @@ export function animateHumanAgent(
         targetLShoulderX = THREE.MathUtils.lerp(targetLShoulderX, -0.48, act);
         targetLElbowX = THREE.MathUtils.lerp(targetLElbowX, -0.55, act);
       } else if (rig.avatarId === 'rimba') {
-        // Brave energetic salute-wave + confident left hip stance
         targetRShoulderZ = THREE.MathUtils.lerp(targetRShoulderZ, 2.55 + waveOsc * 0.9, act);
         targetRShoulderX = THREE.MathUtils.lerp(targetRShoulderX, -0.22, act);
         targetRElbowX = THREE.MathUtils.lerp(targetRElbowX, -0.3, act);
         targetLShoulderZ = THREE.MathUtils.lerp(targetLShoulderZ, -0.52, act);
         targetLElbowX = THREE.MathUtils.lerp(targetLElbowX, -0.78, act);
       } else if (rig.avatarId === 'bayu') {
-        // Cheerful high wave & energetic upbeat posture
         targetRShoulderZ = THREE.MathUtils.lerp(targetRShoulderZ, 2.4 + waveOsc * 1.15, act);
         targetRShoulderX = THREE.MathUtils.lerp(targetRShoulderX, -0.45, act);
         targetRElbowX = THREE.MathUtils.lerp(targetRElbowX, -0.55, act);
         targetLShoulderZ = THREE.MathUtils.lerp(targetLShoulderZ, -0.42, act);
         targetLElbowX = THREE.MathUtils.lerp(targetLElbowX, -0.65, act);
       } else {
-        // Ejen Suara: right hand touches glowing headphones while left arm waves warmly!
         targetRShoulderZ = THREE.MathUtils.lerp(targetRShoulderZ, 1.55, act);
         targetRShoulderX = THREE.MathUtils.lerp(targetRShoulderX, -0.25, act);
         targetRElbowX = THREE.MathUtils.lerp(targetRElbowX, -1.85, act);
@@ -1185,7 +1209,7 @@ export function animateHumanAgent(
 
     rig.torsoGroup.rotation.y = THREE.MathUtils.damp(
       rig.torsoGroup.rotation.y,
-      Math.sin(t * 1.1) * 0.08 + rig.hoverAmount * 0.14,
+      Math.sin(t * 1.1) * (sit > 0.5 ? 0.05 : 0.08) + rig.hoverAmount * 0.14 * (1 - sit),
       7,
       dt
     );

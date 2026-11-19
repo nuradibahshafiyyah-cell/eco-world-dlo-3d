@@ -34,6 +34,7 @@ import {
 import { animateHumanAgent } from '../three/humanAgents';
 import { AvatarId, Clue3D, MissionDef, UserAccount } from '../types/game';
 import { playSFX, setMusicState } from '../utils/sound';
+import { buildMalaysianTtsStyle, pickMalaysianSpeechVoice } from '../utils/malayVoice';
 
 export interface Mission1FlightAdventureProps {
   mission: MissionDef;
@@ -155,34 +156,7 @@ const Q2_OPTIONS = [
   'Pada waktu tengah malam.',
 ];
 
-// Female Malay voice selector for natural Puan Aminah playback
-const MALE_VOICE_RE =
-  /osman|andika|ardi|farid|adam|david|mark|daniel|rishi|alex|fred|george|guy|ryan|\bmale\b|lelaki/i;
-const FEMALE_MS_RE = /yasmin|amira|siti|nur|ain|zura|puteri|rina|female|woman|girl|ms-my-x-ms[bc]/i;
-const FEMALE_ID_RE =
-  /google bahasa indonesia|gadis|damayanti|indri|putri|sari|female|woman|girl/i;
-const ANY_FEMALE_RE =
-  /zira|samantha|victoria|karen|serena|aria|jenny|sonia|libby|female|woman|girl/i;
-
-function pickFemaleMalayVoice(voices: SpeechSynthesisVoice[]): {
-  voice: SpeechSynthesisVoice | null;
-  isConfirmedFemale: boolean;
-} {
-  if (!voices.length) return { voice: null, isConfirmedFemale: false };
-  const nonMale = voices.filter((v) => !MALE_VOICE_RE.test(v.name));
-  const msNonMale = nonMale.filter((v) => v.lang.toLowerCase().startsWith('ms'));
-  const idNonMale = nonMale.filter((v) => v.lang.toLowerCase().startsWith('id'));
-  const msFemale = msNonMale.find((v) => FEMALE_MS_RE.test(v.name));
-  if (msFemale) return { voice: msFemale, isConfirmedFemale: true };
-  const idFemale = idNonMale.find((v) => FEMALE_ID_RE.test(v.name));
-  if (idFemale) return { voice: idFemale, isConfirmedFemale: true };
-  if (idNonMale.length > 0) return { voice: idNonMale[0], isConfirmedFemale: true };
-  if (msNonMale.length > 0) return { voice: msNonMale[0], isConfirmedFemale: false };
-  const anyFemale = nonMale.find((v) => ANY_FEMALE_RE.test(v.name));
-  if (anyFemale) return { voice: anyFemale, isConfirmedFemale: true };
-  const msAny = voices.find((v) => v.lang.toLowerCase().startsWith('ms'));
-  return { voice: msAny || voices[0], isConfirmedFemale: false };
-}
+// Strict Malaysian Bahasa Melayu (ms-MY) voice selector via shared malayVoice utility
 
 // Pre-allocated math helpers (zero GC inside animation loop)
 const _camTarget = new THREE.Vector3();
@@ -390,39 +364,46 @@ export function Mission1FlightAdventure({
       const startSpeechFallback = (reason?: string) => {
         if (sessionId !== playSessionIdRef.current) return;
         setAudioSourceType('browser');
-        if (reason) setAudioNotice(reason);
-        if (!('speechSynthesis' in window)) {
-          handlePassFinished();
-          return;
+        if ('speechSynthesis' in window) {
+          const pool = window.speechSynthesis.getVoices().length
+            ? window.speechSynthesis.getVoices()
+            : voicesList;
+          const { voice, isConfirmedFemale } = pickMalaysianSpeechVoice(pool, { preferFemale: true });
+          if (voice) {
+            if (reason) setAudioNotice(reason);
+            window.speechSynthesis.cancel();
+            const utter = new SpeechSynthesisUtterance(M1_SCRIPT);
+            utter.voice = voice;
+            utter.lang = voice.lang || 'ms-MY';
+            utter.pitch = isConfirmedFemale ? 1.12 : 1.38;
+            utter.rate = 0.94;
+            utter.onstart = () => {
+              if (sessionId !== playSessionIdRef.current) return;
+              setAudioStatus('playing');
+              setMusicState({ suppressedForAudio: true, ducked: false });
+            };
+            utter.onend = () => {
+              handlePassFinished();
+            };
+            utter.onerror = () => {
+              handlePassFinished();
+            };
+            window.speechSynthesis.speak(utter);
+            setAudioStatus('playing');
+            setMusicState({ suppressedForAudio: true, ducked: false });
+            return;
+          }
         }
-        window.speechSynthesis.cancel();
-        const utter = new SpeechSynthesisUtterance(M1_SCRIPT);
-        const pool = window.speechSynthesis.getVoices().length
-          ? window.speechSynthesis.getVoices()
-          : voicesList;
-        const { voice, isConfirmedFemale } = pickFemaleMalayVoice(pool);
-        if (voice) {
-          utter.voice = voice;
-          utter.lang = voice.lang || 'ms-MY';
-        } else {
-          utter.lang = 'ms-MY';
-        }
-        utter.pitch = isConfirmedFemale ? 1.12 : 1.44;
-        utter.rate = 0.94;
-        utter.onstart = () => {
-          if (sessionId !== playSessionIdRef.current) return;
-          setAudioStatus('playing');
-          setMusicState({ suppressedForAudio: true, ducked: false });
-        };
-        utter.onend = () => {
-          handlePassFinished();
-        };
-        utter.onerror = () => {
-          handlePassFinished();
-        };
-        window.speechSynthesis.speak(utter);
+
+        // Strict ms-MY guard: never play Indonesian (id-ID) or English fallback voice
+        setAudioNotice(
+          'Pelayar ini tidak mempunyai enjin suara Bahasa Melayu Malaysia (ms-MY) tempatan. Sila baca transkrip laporan di skrin (tiada suara Bahasa Indonesia digunakan).'
+        );
         setAudioStatus('playing');
-        setMusicState({ suppressedForAudio: true, ducked: false });
+        setMusicState({ suppressedForAudio: false, ducked: false });
+        audioTransitionTimerRef.current = window.setTimeout(() => {
+          handlePassFinished();
+        }, 6500);
       };
 
       try {
@@ -433,8 +414,9 @@ export function Mission1FlightAdventure({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               text: M1_SCRIPT,
-              style:
-                'Speak in standard Malaysian Bahasa Melayu (Bahasa Melayu baku Malaysia, NOT Indonesian accent), as Puan Aminah, a warm, gentle, clear adult Malaysian woman reporting river pollution to primary school pupils.',
+              style: buildMalaysianTtsStyle(
+                'Puan Aminah, a warm, gentle, clear adult Malaysian woman reporting river pollution to Year 6 primary school pupils.'
+              ),
             }),
           });
           if (sessionId !== playSessionIdRef.current) return;
@@ -447,8 +429,8 @@ export function Mission1FlightAdventure({
             }
             const msg =
               errInfo.code === 'NO_API_KEY'
-                ? 'Suara AI Bahasa Melayu memerlukan GEMINI_API_KEY aktif dalam Settings > Secrets. Buat sementara waktu, suara pelayar Bahasa Melayu dimainkan.'
-                : 'Suara AI sedang sibuk; suara pelayar Bahasa Melayu dimainkan buat sementara.';
+                ? 'Suara AI Bahasa Melayu Malaysia memerlukan GEMINI_API_KEY aktif dalam Settings > Secrets. Buat sementara waktu, suara pelayar Bahasa Melayu Malaysia (ms-MY) dimainkan.'
+                : 'Suara AI sedang sibuk; suara pelayar Bahasa Melayu Malaysia (ms-MY) dimainkan buat sementara.';
             startSpeechFallback(msg);
             return;
           }

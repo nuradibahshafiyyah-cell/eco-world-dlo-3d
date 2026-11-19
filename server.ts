@@ -136,16 +136,20 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
 });
 
+const STRICT_MALAYSIAN_MS_MY_STYLE =
+  'Language: Standard Malaysian Bahasa Melayu (Bahasa Melayu baku Malaysia, locale ms-MY, Kuala Lumpur / RTM broadcast accent). NEVER use an Indonesian (id-ID / Jakarta) accent, cadence, or pronunciation. Use clear, natural, warm, friendly, and cheerful Malaysian intonation suitable for Year 6 Malaysian primary school pupils.';
+
 app.post('/api/tts', async (req, res) => {
   try {
     const rawText = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-    const style =
-      typeof req.body?.style === 'string' && req.body.style.trim()
-        ? req.body.style.trim()
-        : 'Speak in standard Malaysian Bahasa Melayu (Bahasa Melayu baku Malaysia, NOT Indonesian accent), as Puan Aminah, a warm, gentle, clear Malaysian woman speaking at a calm pace for primary school pupils.';
+    const requestedStyle =
+      typeof req.body?.style === 'string' && req.body.style.trim() ? req.body.style.trim() : '';
+    const style = requestedStyle
+      ? `${STRICT_MALAYSIAN_MS_MY_STYLE} Context: ${requestedStyle}`
+      : `${STRICT_MALAYSIAN_MS_MY_STYLE} Context: Puan Aminah, a warm, gentle, clear Malaysian woman speaking at a calm pace for primary school pupils.`;
 
     if (!rawText) {
-      return res.status(400).json({ error: 'Text is required for speech generation.', code: 'BAD_REQUEST' });
+      return res.status(400).json({ error: 'Teks diperlukan untuk penjanaan suara Bahasa Melayu.', code: 'BAD_REQUEST' });
     }
 
     const cacheKey = `${style}::${rawText}`;
@@ -218,7 +222,7 @@ app.post('/api/tts', async (req, res) => {
     return res.json({ audioBase64: base64Audio, mimeType, voiceName: 'Kore', provider: 'gemini-ai' });
   } catch (err) {
     console.error('TTS error:', err);
-    return res.status(500).json({ error: 'Failed to synthesize female voice audio.', code: 'SERVER_ERROR' });
+    return res.status(500).json({ error: 'Gagal menjana audio suara Bahasa Melayu Malaysia.', code: 'SERVER_ERROR' });
   }
 });
 

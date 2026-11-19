@@ -15,37 +15,109 @@ import { AvatarId, MissionDef, UserAccount } from '../types/game';
 import { downloadCertificatePdf } from '../utils/certificatePdf';
 import { playSFX, setMusicState } from '../utils/sound';
 import { calcLevel, calcOverallScore, computeAIGuide } from '../utils/storage';
+import { buildMalaysianTtsStyle, pickMalaysianSpeechVoice } from '../utils/malayVoice';
 import { Agent3DStage } from './Agent3DStage';
 
-function speakAgentGreeting(avatarId: AvatarId, text: string): void {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window) || !text) return;
-  try {
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    const voices = window.speechSynthesis.getVoices();
-    const isFemale = avatarId === 'tirta' || avatarId === 'suara';
-    const msVoice =
-      voices.find((v) => v.lang.toLowerCase().startsWith('ms')) ||
-      voices.find((v) => v.lang.toLowerCase().startsWith('id'));
-    if (msVoice) {
-      utter.voice = msVoice;
-      utter.lang = msVoice.lang;
-    } else {
-      utter.lang = 'ms-MY';
+let greetingSessionSeq = 0;
+let activeGreetingAudio: HTMLAudioElement | null = null;
+const greetingTtsCache = new Map<string, string>();
+
+async function speakAgentGreeting(avatarId: AvatarId, text: string): Promise<void> {
+  if (typeof window === 'undefined' || !text) return;
+  stopAgentGreeting();
+  const sessionId = ++greetingSessionSeq;
+  const isFemale = avatarId === 'tirta' || avatarId === 'suara';
+
+  const runBrowserMalayVoiceOnly = () => {
+    if (sessionId !== greetingSessionSeq || !('speechSynthesis' in window)) {
+      setMusicState({ ducked: false });
+      return;
     }
-    utter.pitch = isFemale ? 1.18 : 0.92;
-    utter.rate = 0.98;
-    utter.onstart = () => setMusicState({ ducked: true });
-    utter.onend = () => setMusicState({ ducked: false });
-    utter.onerror = () => setMusicState({ ducked: false });
-    setMusicState({ ducked: true });
-    window.speechSynthesis.speak(utter);
+    try {
+      const voices = window.speechSynthesis.getVoices();
+      const { voice, isConfirmedFemale } = pickMalaysianSpeechVoice(voices, { preferFemale: isFemale });
+      if (!voice) {
+        // Strict ms-MY guard: never fall back to Indonesian (id-ID) or English voices
+        setMusicState({ ducked: false });
+        return;
+      }
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.voice = voice;
+      utter.lang = voice.lang || 'ms-MY';
+      utter.pitch = isFemale ? (isConfirmedFemale ? 1.15 : 1.24) : 0.94;
+      utter.rate = 0.98;
+      utter.onstart = () => setMusicState({ ducked: true });
+      utter.onend = () => setMusicState({ ducked: false });
+      utter.onerror = () => setMusicState({ ducked: false });
+      setMusicState({ ducked: true });
+      window.speechSynthesis.speak(utter);
+    } catch {
+      setMusicState({ ducked: false });
+    }
+  };
+
+  try {
+    const cacheKey = `${avatarId}::${text}`;
+    let url = greetingTtsCache.get(cacheKey);
+    if (!url) {
+      const resp = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          style: buildMalaysianTtsStyle(
+            `Cheerful, confident, friendly Malaysian youth hero agent (${avatarId}) greeting a Year 6 pupil.`
+          ),
+        }),
+      });
+      if (sessionId !== greetingSessionSeq) return;
+      if (!resp.ok) {
+        runBrowserMalayVoiceOnly();
+        return;
+      }
+      const data = (await resp.json()) as { audioBase64?: string; mimeType?: string };
+      if (sessionId !== greetingSessionSeq) return;
+      if (!data.audioBase64) {
+        runBrowserMalayVoiceOnly();
+        return;
+      }
+      const bin = atob(data.audioBase64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      url = URL.createObjectURL(new Blob([bytes], { type: data.mimeType || 'audio/wav' }));
+      greetingTtsCache.set(cacheKey, url);
+    }
+
+    if (sessionId !== greetingSessionSeq) return;
+    const audio = new Audio(url);
+    activeGreetingAudio = audio;
+    audio.onplay = () => setMusicState({ ducked: true });
+    audio.onended = () => {
+      if (activeGreetingAudio === audio) activeGreetingAudio = null;
+      setMusicState({ ducked: false });
+    };
+    audio.onerror = () => {
+      if (activeGreetingAudio === audio) activeGreetingAudio = null;
+      runBrowserMalayVoiceOnly();
+    };
+    await audio.play();
   } catch {
-    setMusicState({ ducked: false });
+    runBrowserMalayVoiceOnly();
   }
 }
 
 function stopAgentGreeting(): void {
+  greetingSessionSeq += 1;
+  if (activeGreetingAudio) {
+    try {
+      activeGreetingAudio.pause();
+      activeGreetingAudio.currentTime = 0;
+    } catch {
+      // ignore
+    }
+    activeGreetingAudio = null;
+  }
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     try {
       window.speechSynthesis.cancel();

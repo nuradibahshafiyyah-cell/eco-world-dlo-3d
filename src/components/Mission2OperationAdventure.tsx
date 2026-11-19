@@ -1,11 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   AlertTriangle,
   ArrowLeft,
   Award,
+  Camera,
   CheckCircle2,
+  Compass,
   Droplets,
+  Eye,
   Leaf,
   Mic,
   Music,
@@ -22,9 +26,14 @@ import {
   Wind,
 } from 'lucide-react';
 import { AVATARS } from '../data/gameData';
-import { buildHumanEcoAgent, animateHumanAgent } from '../three/humanAgents';
+import {
+  buildSungaiTercemarWorld,
+  RiverStageMode,
+  SungaiTercemarWorldHandle,
+} from '../three/sungaiTercemarWorld';
 import { MissionDef, UserAccount } from '../types/game';
 import { playSFX, setMusicState } from '../utils/sound';
+import { buildMalaysianTtsStyle, pickMalaysianSpeechVoice } from '../utils/malayVoice';
 
 export interface Mission2OperationAdventureProps {
   mission: MissionDef;
@@ -47,6 +56,7 @@ export interface Mission2OperationAdventureProps {
 
 type Mission2Stage =
   | 'portal'
+  | 'travel_intro'
   | 'audio_clues'
   | 'puzzle_lab'
   | 'voice_challenge'
@@ -238,24 +248,12 @@ function ClueSceneGraphic({ id }: { id: AudioClueItem['id'] }) {
 }
 
 /* ============================================================================
-   MALAY VOICE PICKER (STRICTLY BAHASA MELAYU / INDONESIAN, NEVER ENGLISH)
+   MALAY VOICE PICKER (STRICTLY BAHASA MELAYU MALAYSIA ms-MY, NEVER INDONESIAN)
    ============================================================================ */
-const MALE_VOICE_RE = /osman|andika|ardi|farid|adam|david|mark|daniel|alex|fred|george|guy|ryan|\bmale\b|lelaki/i;
-const FEMALE_MS_RE = /yasmin|amira|siti|nur|ain|zura|puteri|rina|female|woman|girl|ms-my-x-ms[bc]/i;
 
-function pickMalaySpeechVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
-  const malayPool = voices.filter((v) => {
-    const lang = v.lang.toLowerCase();
-    return lang.startsWith('ms') || lang.startsWith('id');
-  });
-  if (malayPool.length === 0) return null;
-  const msFemale = malayPool.find(
-    (v) => v.lang.toLowerCase().startsWith('ms') && !MALE_VOICE_RE.test(v.name) && FEMALE_MS_RE.test(v.name)
-  );
-  if (msFemale) return msFemale;
-  const msAny = malayPool.find((v) => v.lang.toLowerCase().startsWith('ms'));
-  return msAny || malayPool[0];
-}
+// Pre-allocated Three.js sky/fog transition colors (zero allocations inside renderLoop)
+const _targetRiverBg = new THREE.Color();
+const _targetRiverFog = new THREE.Color();
 
 function formatSec(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -276,6 +274,9 @@ export function Mission2OperationAdventure({
 }: Mission2OperationAdventureProps) {
   const [stage, setStage] = useState<Mission2Stage>('portal');
   const [portalJumping, setPortalJumping] = useState(false);
+  const [introPhase, setIntroPhase] = useState<'walking' | 'observing' | 'done'>('walking');
+  const [inspecting3D, setInspecting3D] = useState(false);
+  const [cameraPreset, setCameraPreset] = useState<'cinematic' | 'river_wide' | 'agent_close'>('cinematic');
 
   // Stage 2: Audio Clues state
   const [heardIds, setHeardIds] = useState<string[]>([]);
@@ -336,17 +337,19 @@ export function Mission2OperationAdventure({
   const audioCtxRef = useRef<AudioContext | null>(null);
   const meterRafRef = useRef<number>(0);
 
-  // Three.js live futuristic 3D background canvas ref
+  // Three.js live 3D Polluted-to-Restored River World refs
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const worldRef = useRef<SungaiTercemarWorldHandle | null>(null);
   const stageRef = useRef<Mission2Stage>(stage);
   stageRef.current = stage;
   const justTeleportedRef = useRef<boolean>(justTeleported);
   justTeleportedRef.current = justTeleported;
+  const lastIntroPhaseRef = useRef<'walking' | 'observing' | 'done'>('walking');
 
   const avatarDef = AVATARS.find((a) => a.id === user.avatar) || AVATARS[2];
 
   // =========================================================================
-  // LIVE 3D FUTURISTIC ECOWORLD HOLOGRAPHIC COMMAND BACKDROP
+  // LIVE 3D SUNGAI TERCEMAR -> SUNGAI DIPULIHKAN ADVENTURE ENVIRONMENT
   // =========================================================================
   useEffect(() => {
     const container = mountRef.current;
@@ -354,7 +357,18 @@ export function Mission2OperationAdventure({
 
     let renderer: THREE.WebGLRenderer;
     try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+      const probeCanvas = document.createElement('canvas');
+      const probeGl = probeCanvas.getContext('webgl2') || probeCanvas.getContext('webgl');
+      const probeDbg = probeGl?.getExtension('WEBGL_debug_renderer_info');
+      const probeName = probeDbg
+        ? String(probeGl?.getParameter(probeDbg.UNMASKED_RENDERER_WEBGL) || '')
+        : '';
+      const probeSoft = /swiftshader|llvmpipe|softpipe/i.test(probeName);
+
+      renderer = new THREE.WebGLRenderer({
+        antialias: !probeSoft,
+        powerPreference: 'high-performance',
+      });
     } catch {
       return;
     }
@@ -364,226 +378,71 @@ export function Mission2OperationAdventure({
     const glName = dbg ? String(gl?.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '') : '';
     const isSoftwareGl = /swiftshader|llvmpipe|softpipe/i.test(glName);
 
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isSoftwareGl ? 1 : 2));
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(container.clientWidth, Math.max(1, container.clientHeight));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.08;
+    renderer.toneMappingExposure = 1.12;
+    renderer.shadowMap.enabled = !isSoftwareGl;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#071a38');
-    scene.fog = new THREE.FogExp2('#0c294f', 0.018);
+    scene.background = new THREE.Color('#72878d');
+    scene.fog = new THREE.FogExp2('#8ea39d', 0.0145);
+
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const envRT = pmremGenerator.fromScene(new RoomEnvironment(), 0.04);
+    scene.environment = envRT.texture;
+    scene.environmentIntensity = 0.65;
+    pmremGenerator.dispose();
 
     const camera = new THREE.PerspectiveCamera(
       52,
       container.clientWidth / Math.max(1, container.clientHeight),
-      0.1,
-      180
+      0.15,
+      190
     );
-    camera.position.set(0, 5.2, 17);
+    camera.position.set(-11, 4.5, 16);
 
-    // Three-point lighting
-    const hemi = new THREE.HemisphereLight('#7dd3fc', '#0f172a', 1.1);
-    scene.add(hemi);
-    const keyLight = new THREE.DirectionalLight('#fef08a', 1.4);
-    keyLight.position.set(12, 20, 10);
-    scene.add(keyLight);
-    const rimLight = new THREE.PointLight('#22d3ee', 2.4, 45);
-    rimLight.position.set(-8, 6, -4);
-    scene.add(rimLight);
-    const purpleLight = new THREE.PointLight('#a855f7', 1.9, 45);
-    purpleLight.position.set(8, 5, -6);
-    scene.add(purpleLight);
+    const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+    const world = buildSungaiTercemarWorld(avatarDef.id, maxAnisotropy, justTeleportedRef.current);
+    worldRef.current = world;
+    scene.add(world.group);
 
-    // Floating futuristic EcoWorld command platform
-    const platformGeo = new THREE.CylinderGeometry(8.5, 9.6, 0.7, 48);
-    const platformMat = new THREE.MeshStandardMaterial({
-      color: '#0f294a',
-      metalness: 0.6,
-      roughness: 0.25,
-    });
-    const platform = new THREE.Mesh(platformGeo, platformMat);
-    platform.position.y = -0.35;
-    scene.add(platform);
+    if (!isSoftwareGl) {
+      renderer.compile(scene, camera);
+    }
 
-    // Glowing cyan/emerald portal ring
-    const ringGeo = new THREE.TorusGeometry(4.4, 0.14, 16, 64);
-    const ringMat = new THREE.MeshBasicMaterial({ color: '#22d3ee' });
-    const portalRing = new THREE.Mesh(ringGeo, ringMat);
-    portalRing.position.set(0, 3.6, -4.2);
-    scene.add(portalRing);
-
-    const innerRingGeo = new THREE.TorusGeometry(3.8, 0.08, 12, 64);
-    const innerRingMat = new THREE.MeshBasicMaterial({ color: '#34d399' });
-    const innerRing = new THREE.Mesh(innerRingGeo, innerRingMat);
-    innerRing.position.set(0, 3.6, -4.2);
-    scene.add(innerRing);
-
-    // Soft radial contact shadow texture for buildHumanEcoAgent
-    const shadowCanvas = document.createElement('canvas');
-    shadowCanvas.width = 128;
-    shadowCanvas.height = 128;
-    const sCtx = shadowCanvas.getContext('2d')!;
-    const sGrad = sCtx.createRadialGradient(64, 64, 6, 64, 64, 62);
-    sGrad.addColorStop(0, 'rgba(2, 6, 23, 0.72)');
-    sGrad.addColorStop(1, 'rgba(2, 6, 23, 0)');
-    sCtx.fillStyle = sGrad;
-    sCtx.fillRect(0, 0, 128, 128);
-    const shadowTex = new THREE.CanvasTexture(shadowCanvas);
-
-    // 3D EcoWorld Agent standing on command deck
-    const agentRig = buildHumanEcoAgent(avatarDef.id, shadowTex, { showPedestal: true });
-    agentRig.group.position.set(-4.6, 0, 2.2);
-    agentRig.group.rotation.y = 0.55;
-    agentRig.group.scale.setScalar(1.35);
-    scene.add(agentRig.group);
-
-    const setArrivalAgentOpacity = (alpha: number) => {
-      agentRig.group.traverse((obj) => {
-        if ((obj as THREE.Mesh).isMesh) {
-          const mesh = obj as THREE.Mesh;
-          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-          mats.forEach((mat) => {
-            if (!mat) return;
-            if (mat.userData.__origTransparent === undefined) {
-              mat.userData.__origTransparent = mat.transparent;
-              mat.userData.__origOpacity = mat.opacity;
-            }
-            const origTransparent = Boolean(mat.userData.__origTransparent);
-            const origOpacity =
-              typeof mat.userData.__origOpacity === 'number' ? mat.userData.__origOpacity : 1;
-            if (alpha >= 0.999) {
-              mat.transparent = origTransparent;
-              mat.opacity = origOpacity;
-            } else {
-              mat.transparent = true;
-              mat.opacity = origOpacity * Math.max(0, Math.min(1, alpha));
-            }
-          });
-        }
-      });
+    // Smooth camera orbit & zoom directly on the 3D river canvas
+    let dragging = false;
+    let prevX = 0;
+    let prevY = 0;
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      dragging = true;
+      prevX = e.clientX;
+      prevY = e.clientY;
     };
-
-    // Blue arrival teleportation FX around agent on Mission 2 entry
-    const arrivalFxGroup = new THREE.Group();
-    arrivalFxGroup.position.set(-4.6, 0, 2.2);
-    arrivalFxGroup.visible = justTeleportedRef.current;
-    scene.add(arrivalFxGroup);
-
-    const arrBeamMat = new THREE.MeshBasicMaterial({
-      color: 0x38bdf8,
-      transparent: true,
-      opacity: 0.55,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    const arrBeam = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.15, 1.55, 12, 28, 1, true),
-      arrBeamMat
-    );
-    arrBeam.position.y = 6.0;
-    arrivalFxGroup.add(arrBeam);
-
-    const arrRings: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; phase: number }[] = [];
-    [0x38bdf8, 0x22d3ee, 0x60a5fa].forEach((hex, idx) => {
-      const rMat = new THREE.MeshBasicMaterial({
-        color: hex,
-        transparent: true,
-        opacity: 0.9,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      });
-      const rMesh = new THREE.Mesh(
-        new THREE.TorusGeometry(1.45 + idx * 0.25, 0.06, 12, 48),
-        rMat
-      );
-      rMesh.rotation.x = Math.PI / 2;
-      rMesh.position.y = 0.4 + idx * 0.85;
-      arrivalFxGroup.add(rMesh);
-      arrRings.push({ mesh: rMesh, mat: rMat, phase: idx * 0.33 });
-    });
-
-    const arrParticles: {
-      mesh: THREE.Mesh;
-      mat: THREE.MeshBasicMaterial;
-      angle: number;
-      radius: number;
-      speed: number;
-      yOffset: number;
-    }[] = [];
-    const arrPartGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
-    for (let i = 0; i < 28; i++) {
-      const pMat = new THREE.MeshBasicMaterial({
-        color: i % 3 === 0 ? 0xe0f2fe : i % 2 === 0 ? 0x38bdf8 : 0x22d3ee,
-        transparent: true,
-        opacity: 0.9,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      });
-      const pMesh = new THREE.Mesh(arrPartGeo, pMat);
-      arrivalFxGroup.add(pMesh);
-      arrParticles.push({
-        mesh: pMesh,
-        mat: pMat,
-        angle: (i / 28) * Math.PI * 2,
-        radius: 0.95 + (i % 5) * 0.28,
-        speed: 3.0 + (i % 4) * 0.8,
-        yOffset: (i % 7) * 0.55,
-      });
-    }
-
-    if (justTeleportedRef.current) {
-      setArrivalAgentOpacity(0.02);
-    }
-
-    // Lush EcoWorld trees & river around deck (brighten dramatically on victory)
-    const trees: THREE.Group[] = [];
-    const treePositions: [number, number, number][] = [
-      [-11, -0.5, -7],
-      [-9, -0.5, -13],
-      [10, -0.5, -8],
-      [12, -0.5, -13],
-      [0, -0.5, -17],
-      [-14, -0.5, 2],
-      [14, -0.5, 1],
-    ];
-    treePositions.forEach(([tx, ty, tz]) => {
-      const tg = new THREE.Group();
-      const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.28, 0.4, 2.2, 8),
-        new THREE.MeshStandardMaterial({ color: '#78350f' })
-      );
-      trunk.position.y = 1.1;
-      const crown = new THREE.Mesh(
-        new THREE.DodecahedronGeometry(1.5, 1),
-        new THREE.MeshStandardMaterial({ color: '#10b981', roughness: 0.7 })
-      );
-      crown.position.y = 2.9;
-      tg.add(trunk, crown);
-      tg.position.set(tx, ty, tz);
-      scene.add(tg);
-      trees.push(tg);
-    });
-
-    // Floating holographic particles
-    const partCount = isSoftwareGl ? 60 : 160;
-    const partPos = new Float32Array(partCount * 3);
-    for (let i = 0; i < partCount; i++) {
-      partPos[i * 3] = (Math.random() - 0.5) * 34;
-      partPos[i * 3 + 1] = Math.random() * 14 + 0.5;
-      partPos[i * 3 + 2] = (Math.random() - 0.5) * 26 - 3;
-    }
-    const partGeo = new THREE.BufferGeometry();
-    partGeo.setAttribute('position', new THREE.BufferAttribute(partPos, 3));
-    const partMat = new THREE.PointsMaterial({
-      color: '#5eead4',
-      size: 0.24,
-      transparent: true,
-      opacity: 0.85,
-    });
-    const particles = new THREE.Points(partGeo, partMat);
-    scene.add(particles);
+    const onPointerMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      const dx = e.clientX - prevX;
+      const dy = e.clientY - prevY;
+      prevX = e.clientX;
+      prevY = e.clientY;
+      world.orbitCameraBy(-dx * 0.006, dy * 0.0048);
+    };
+    const onPointerUp = () => {
+      dragging = false;
+    };
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      world.zoomCameraBy(e.deltaY * 0.008);
+    };
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
 
     const clock = new THREE.Clock();
     let frameId = 0;
@@ -599,117 +458,99 @@ export function Mission2OperationAdventure({
     };
     window.addEventListener('resize', onResize);
 
-    function renderLoop() {
-      if (disposed) return;
-      const dt = Math.min(0.05, clock.getDelta());
-      const elapsed = clock.elapsedTime;
-      const isVictory = stageRef.current === 'victory';
-
-      // Smoothly transition background & light from futuristic night-command to radiant healed EcoWorld on victory
-      const targetBg = new THREE.Color(isVictory ? '#0ea5e9' : '#071a38');
-      (scene.background as THREE.Color).lerp(targetBg, dt * 2.2);
-      if (scene.fog instanceof THREE.FogExp2) {
-        scene.fog.color.lerp(new THREE.Color(isVictory ? '#38bdf8' : '#0c294f'), dt * 2.2);
-      }
-
-      portalRing.rotation.z = elapsed * 0.45;
-      innerRing.rotation.z = -elapsed * 0.72;
-      ringMat.color.set(isVictory ? '#fde047' : '#22d3ee');
-      partMat.color.set(isVictory ? '#fef08a' : '#5eead4');
-
-      particles.rotation.y = elapsed * 0.06;
-
-      // Arrival Teleportation Materialization FX (when arriving via Mission 1 teleport)
-      const arrivalDuration = 2.45;
-      if (justTeleportedRef.current && elapsed < arrivalDuration) {
-        const p = Math.min(1, elapsed / arrivalDuration);
-        const fadeOutFx = 1 - Math.max(0, (p - 0.72) / 0.28);
-        arrivalFxGroup.visible = true;
-        arrBeamMat.opacity = 0.56 * fadeOutFx;
-        arrBeam.rotation.y += dt * 3.5;
-
-        arrRings.forEach((rg, idx) => {
-          const cycle = 1 - ((p * 2.2 + rg.phase) % 1);
-          rg.mesh.position.y = 0.25 + cycle * 3.4;
-          rg.mesh.rotation.z += dt * (4.2 + idx * 1.4);
-          rg.mat.opacity = Math.sin(cycle * Math.PI) * 0.92 * fadeOutFx;
-        });
-
-        arrParticles.forEach((pt) => {
-          pt.angle += dt * pt.speed;
-          const r = pt.radius * (1.22 - p * 0.28);
-          pt.mesh.position.x = Math.cos(pt.angle) * r;
-          pt.mesh.position.z = Math.sin(pt.angle) * r;
-          pt.mesh.position.y = Math.max(0.15, (pt.yOffset + (1 - p) * 2.8) % 3.8);
-          pt.mesh.rotation.x += dt * 4;
-          pt.mesh.rotation.y += dt * 5;
-          pt.mat.opacity = 0.92 * fadeOutFx;
-        });
-
-        const materializeAlpha = Math.min(1, Math.max(0.08, (p - 0.22) / 0.58));
-        setArrivalAgentOpacity(materializeAlpha);
-        agentRig.group.scale.setScalar(THREE.MathUtils.lerp(1.1, 1.35, Math.min(1, p / 0.82)));
-      } else if (arrivalFxGroup.visible) {
-        arrivalFxGroup.visible = false;
-        setArrivalAgentOpacity(1);
-        agentRig.group.scale.setScalar(1.35);
-      }
-
-      animateHumanAgent(agentRig, elapsed, dt, {
-        isMoving: false,
-        hovered: isVictory,
-        selected: true,
-      });
-
-      trees.forEach((tr, idx) => {
-        const s = isVictory ? 1.2 + Math.sin(elapsed * 2 + idx) * 0.05 : 0.92;
-        tr.scale.lerp(new THREE.Vector3(s, s, s), dt * 3);
-      });
-
-      camera.position.x = Math.sin(elapsed * 0.22) * 1.4;
-      camera.position.y = 4.9 + Math.cos(elapsed * 0.3) * 0.35;
-      camera.lookAt(0, 2.6, -2);
-
-      renderer.render(scene, camera);
-
-      if (isSoftwareGl) {
-        frameId = window.setTimeout(() => requestAnimationFrame(renderLoop), 65);
-      } else {
-        frameId = requestAnimationFrame(renderLoop);
-      }
-    }
-
     const onContextLost = (e: Event) => {
       e.preventDefault();
       disposed = true;
       cancelAnimationFrame(frameId);
-      clearTimeout(frameId);
     };
     renderer.domElement.addEventListener('webglcontextlost', onContextLost);
+
+    const gl2 = gl as WebGL2RenderingContext;
+    const canFenceSync = isSoftwareGl && typeof gl2?.fenceSync === 'function';
+
+    function afterDraw(cb: () => void) {
+      if (!canFenceSync) {
+        frameId = requestAnimationFrame(cb);
+        return;
+      }
+      const sync = gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      if (!sync) {
+        frameId = requestAnimationFrame(cb);
+        return;
+      }
+      gl2.flush();
+      const pollFence = () => {
+        if (disposed) {
+          gl2.deleteSync(sync);
+          return;
+        }
+        const status = gl2.clientWaitSync(sync, 0, 0);
+        if (
+          status === gl2.ALREADY_SIGNALED ||
+          status === gl2.CONDITION_SATISFIED ||
+          status === gl2.WAIT_FAILED
+        ) {
+          gl2.deleteSync(sync);
+          frameId = requestAnimationFrame(cb);
+        } else {
+          frameId = requestAnimationFrame(pollFence);
+        }
+      };
+      frameId = requestAnimationFrame(pollFence);
+    }
+
+    function renderLoop() {
+      if (disposed) return;
+      const dt = Math.min(0.05, clock.getDelta());
+      const elapsed = clock.elapsedTime;
+      const st = stageRef.current as RiverStageMode;
+
+      const sim = world.update(dt, elapsed, camera, st, justTeleportedRef.current);
+
+      // Smoothly brighten sky & horizon haze as river transitions from polluted -> restored
+      const rec = sim.recoveryProgress;
+      _targetRiverBg.setHex(0x72878d).lerp(_targetRiverFog.setHex(0x60a5fa), rec);
+      if (scene.background instanceof THREE.Color) {
+        scene.background.lerp(_targetRiverBg, dt * 3.0);
+      }
+      _targetRiverFog.setHex(0x8ea39d).lerp(_targetRiverBg.setHex(0xbae6fd), rec);
+      if (scene.fog instanceof THREE.FogExp2) {
+        scene.fog.color.lerp(_targetRiverFog, dt * 3.0);
+        scene.fog.density = THREE.MathUtils.lerp(0.0155, 0.0085, rec);
+      }
+
+      if (st === 'travel_intro') {
+        if (sim.introPhase !== lastIntroPhaseRef.current) {
+          lastIntroPhaseRef.current = sim.introPhase;
+          setIntroPhase(sim.introPhase);
+          if (sim.introPhase === 'done') {
+            setStage('audio_clues');
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
+      afterDraw(renderLoop);
+    }
 
     renderLoop();
 
     return () => {
       disposed = true;
       cancelAnimationFrame(frameId);
-      clearTimeout(frameId);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      renderer.domElement.removeEventListener('wheel', onWheel);
       renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
-      scene.traverse((obj) => {
-        if (obj instanceof THREE.Mesh || obj instanceof THREE.Points) {
-          obj.geometry?.dispose();
-          if (Array.isArray(obj.material)) {
-            obj.material.forEach((m) => m.dispose());
-          } else {
-            obj.material?.dispose();
-          }
-        }
-      });
-      shadowTex.dispose();
+      world.dispose();
+      envRT.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === container) {
         container.removeChild(renderer.domElement);
       }
+      worldRef.current = null;
     };
   }, [avatarDef.id]);
 
@@ -789,8 +630,9 @@ export function Mission2OperationAdventure({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text: clue.script,
-            style:
-              'Speak in clear, natural standard Malaysian Bahasa Melayu (Bahasa Melayu baku Malaysia) suitable for primary school pupils.',
+            style: buildMalaysianTtsStyle(
+              'Clear, natural Malaysian presenter reporting environmental evidence to primary school pupils.'
+            ),
           }),
         });
         if (!resp.ok) throw new Error('TTS server unavailable');
@@ -830,7 +672,7 @@ export function Mission2OperationAdventure({
   const tryBrowserMalayVoice = (clue: AudioClueItem) => {
     if ('speechSynthesis' in window) {
       const voices = window.speechSynthesis.getVoices();
-      const malayVoice = pickMalaySpeechVoice(voices);
+      const { voice: malayVoice } = pickMalaysianSpeechVoice(voices);
       if (malayVoice) {
         window.speechSynthesis.cancel();
         const utter = new SpeechSynthesisUtterance(clue.script);
@@ -858,11 +700,11 @@ export function Mission2OperationAdventure({
       }
     }
 
-    // Strict Bahasa Melayu guard: Never use an English voice! Show synchronized Bahasa Melayu visual reader caption
+    // Strict Bahasa Melayu Malaysia (ms-MY) guard: Never use Indonesian or English voice!
     setPlayingClueId(clue.id);
     setMusicState({ suppressedForAudio: false });
     setAudioFallbackNotice(
-      'Suara pembaca Bahasa Melayu sedang dipaparkan melalui skrin sari kata langsung (tiada suara Inggeris digunakan).'
+      'Suara pembaca Bahasa Melayu Malaysia (ms-MY) sedang dipaparkan melalui skrin sari kata langsung (tiada suara Bahasa Indonesia atau Inggeris digunakan).'
     );
     captionTimerRef.current = window.setTimeout(() => {
       setPlayingClueId(null);
@@ -1086,8 +928,11 @@ export function Mission2OperationAdventure({
     setPortalJumping(true);
     window.setTimeout(() => {
       setPortalJumping(false);
-      setStage('audio_clues');
-    }, 700);
+      lastIntroPhaseRef.current = 'walking';
+      setIntroPhase('walking');
+      worldRef.current?.startTravelIntro();
+      setStage('travel_intro');
+    }, 550);
   };
 
   const handleFinishMission2 = (afterAction: 'map' | 'next_mission') => {
@@ -1156,7 +1001,7 @@ export function Mission2OperationAdventure({
             <span
               key={stKey}
               className={`px-2.5 py-1 rounded-xl transition-colors ${
-                stage === stKey
+                stage === stKey || (stage === 'travel_intro' && stKey === 'portal')
                   ? 'bg-gradient-to-r from-emerald-400 to-cyan-400 text-slate-950 font-black'
                   : 'text-cyan-200/70'
               }`}
@@ -1167,6 +1012,20 @@ export function Mission2OperationAdventure({
         </div>
 
         <div className="flex items-center gap-2">
+          {stage !== 'portal' && stage !== 'travel_intro' && (
+            <button
+              type="button"
+              onClick={() => {
+                playSFX('click');
+                setInspecting3D((v) => !v);
+              }}
+              className="btn-game-teal btn-game-sm px-3 py-2 text-slate-950 font-game text-xs font-black flex items-center gap-1.5 cursor-pointer"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>{inspecting3D ? 'Kembali ke Tugasan' : stage === 'victory' ? 'Lihat Sungai Pulih 3D' : 'Tinjau Sungai 3D'}</span>
+            </button>
+          )}
+
           <div className="hidden sm:flex items-center gap-2 rounded-2xl portal-glass-sub px-2.5 py-1.5">
             <button
               type="button"
@@ -1207,14 +1066,94 @@ export function Mission2OperationAdventure({
         </div>
       </header>
 
-      {/* Main Responsive Stage Container */}
-      <main className="relative z-20 h-[calc(100vh-76px)] overflow-y-auto eco-scroll p-3 sm:p-5 pb-24 flex items-center justify-center">
+      {/* Travel & River Observation Cinematic HUD Overlay */}
+      {stage === 'travel_intro' && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-20 w-[calc(100%-1.5rem)] max-w-2xl pointer-events-auto modal-pop-in">
+          <div className="portal-glass-card rounded-3xl p-4 sm:p-5 border-2 border-cyan-300/80 text-white flex flex-wrap items-center justify-between gap-3 shadow-2xl">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-300 to-cyan-400 text-slate-950 flex items-center justify-center shrink-0">
+                <Compass className="w-6 h-6" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[11px] font-game font-bold text-amber-300 tracking-wider">
+                  {introPhase === 'walking'
+                    ? 'PERJALANAN EJEN ECOWORLD KE SUNGAI'
+                    : 'PEMERHATIAN KEADAAN SUNGAI TERCEMAR'}
+                </div>
+                <p className="text-xs sm:text-sm text-cyan-50 font-semibold leading-snug">
+                  {introPhase === 'walking'
+                    ? 'Ejen EcoWorld sedang menuju ke tebing sungai untuk membuat pemeriksaan awal...'
+                    : 'Perhatikan air sungai yang keruh dan sampah di tebing. Selesaikan aktiviti misi untuk memulihkannya!'}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                playSFX('portal');
+                setStage('audio_clues');
+              }}
+              className="btn-game-emerald btn-game-sm px-4 py-2.5 text-slate-950 font-game text-xs font-black shrink-0 cursor-pointer"
+            >
+              TERUSKAN KE PETUNJUK →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Optional 3D River Free-Orbit Inspection Dock (when user toggles "Tinjau Sungai 3D") */}
+      {inspecting3D && stage !== 'portal' && stage !== 'travel_intro' && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-20 pointer-events-auto modal-pop-in">
+          <div className="portal-glass-card rounded-2xl px-4 py-2.5 border border-cyan-300/75 text-white flex flex-wrap items-center gap-2.5 shadow-2xl">
+            <span className="text-xs font-semibold text-cyan-100">
+              Seret skrin untuk pusing sudut kamera · Skrol untuk zum
+            </span>
+            <div className="flex items-center gap-1.5">
+              {(
+                [
+                  ['cinematic', 'Sudut Ejen'],
+                  ['river_wide', 'Pemandangan Luas'],
+                  ['agent_close', 'Dekat Ejen'],
+                ] as ['cinematic' | 'river_wide' | 'agent_close', string][]
+              ).map(([preset, lbl]) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => {
+                    playSFX('click');
+                    setCameraPreset(preset);
+                    worldRef.current?.setCameraPreset(preset);
+                  }}
+                  className={`px-2.5 py-1 rounded-xl font-game text-[11px] font-bold border cursor-pointer flex items-center gap-1 ${
+                    cameraPreset === preset
+                      ? 'bg-cyan-400 text-slate-950 border-cyan-200'
+                      : 'bg-slate-900/90 text-cyan-100 border-cyan-400/45'
+                  }`}
+                >
+                  <Camera className="w-3 h-3" />
+                  <span>{lbl}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main Responsive Stage Container (passes pointer clicks through to 3D river when inspecting) */}
+      <main
+        className={`relative z-20 h-[calc(100vh-76px)] overflow-y-auto eco-scroll p-3 sm:p-5 pb-24 flex items-center justify-center pointer-events-none ${
+          stage === 'travel_intro' || inspecting3D ? 'opacity-0' : ''
+        }`}
+      >
         {/* =================================================================
             STAGE 1: TELEPORTASI KE ECOWORLD (PORTAL ENTRY)
            ================================================================= */}
         {stage === 'portal' && (
           <div
             className={`portal-glass-card modal-pop-in w-full max-w-3xl rounded-3xl p-6 sm:p-8 text-center text-white space-y-6 border-2 border-cyan-300/75 transition-all duration-500 ${
+              inspecting3D ? 'pointer-events-none' : 'pointer-events-auto'
+            } ${
               portalJumping ? 'scale-110 opacity-0' : 'scale-100 opacity-100'
             }`}
           >
@@ -1258,7 +1197,7 @@ export function Mission2OperationAdventure({
             STAGE 2: CABARAN PERTAMA – DENGAR DAN JEJAK PETUNJUK
            ================================================================= */}
         {stage === 'audio_clues' && (
-          <div className="portal-glass-card modal-pop-in w-full max-w-5xl rounded-3xl p-5 sm:p-7 text-white space-y-5 border-2 border-cyan-400/70 my-auto">
+          <div className={`portal-glass-card modal-pop-in w-full max-w-5xl rounded-3xl p-5 sm:p-7 text-white space-y-5 border-2 border-cyan-400/70 my-auto ${inspecting3D ? 'pointer-events-none' : 'pointer-events-auto'}`}>
             <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-cyan-400/25">
               <div>
                 <div className="text-xs font-game font-bold text-cyan-300 tracking-wider">
@@ -1355,7 +1294,7 @@ export function Mission2OperationAdventure({
               <div className="p-4 rounded-2xl bg-slate-950/90 border-2 border-cyan-300/70 space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-game text-xs font-black text-amber-300 flex items-center gap-2">
-                    <Volume2 className="w-4 h-4 animate-pulse" />
+                    <Volume2 className="w-4 h-4" />
                     <span>SEDANG MEMAINKAN: {activeClueObj.title.toUpperCase()}</span>
                   </span>
                   <button
@@ -1403,7 +1342,7 @@ export function Mission2OperationAdventure({
             STAGE 3: CABARAN KEDUA – MAKMAL PUZZLE ECOWORLD (DRAG & DROP)
            ================================================================= */}
         {stage === 'puzzle_lab' && (
-          <div className="portal-glass-card modal-pop-in w-full max-w-6xl rounded-3xl p-5 sm:p-6 text-white space-y-4 border-2 border-purple-400/70 my-auto">
+          <div className={`portal-glass-card modal-pop-in w-full max-w-6xl rounded-3xl p-5 sm:p-6 text-white space-y-4 border-2 border-purple-400/70 my-auto ${inspecting3D ? 'pointer-events-none' : 'pointer-events-auto'}`}>
             <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-cyan-400/25">
               <div>
                 <div className="text-xs font-game font-bold text-purple-300 tracking-wider">
@@ -1493,7 +1432,7 @@ export function Mission2OperationAdventure({
                           title="Seret ke ruang lain atau klik untuk kembalikan ke meja"
                           className={`p-3 rounded-2xl border-2 text-xs font-bold flex items-center justify-between gap-2 transition-all cursor-grab active:cursor-grabbing ${
                             isWrong
-                              ? 'border-amber-300 bg-rose-950/90 text-amber-100 animate-pulse'
+                              ? 'border-amber-300 bg-rose-950/90 text-amber-100 ring-2 ring-amber-400'
                               : puzzleSolved
                               ? 'border-emerald-300 bg-emerald-900/75 text-white'
                               : 'border-emerald-300/70 bg-slate-950/85 text-emerald-100 hover:border-white'
@@ -1576,7 +1515,7 @@ export function Mission2OperationAdventure({
                           title="Seret ke ruang lain atau klik untuk kembalikan ke meja"
                           className={`p-3 rounded-2xl border-2 text-xs font-bold flex items-center justify-between gap-2 transition-all cursor-grab active:cursor-grabbing ${
                             isWrong
-                              ? 'border-amber-300 bg-rose-950/90 text-amber-100 animate-pulse'
+                              ? 'border-amber-300 bg-rose-950/90 text-amber-100 ring-2 ring-amber-400'
                               : puzzleSolved
                               ? 'border-cyan-300 bg-sky-900/75 text-white'
                               : 'border-cyan-300/70 bg-slate-950/85 text-cyan-100 hover:border-white'
@@ -1707,7 +1646,7 @@ export function Mission2OperationAdventure({
             STAGE 4: CABARAN KETIGA – SUARA EJEN: FIKIR DAN HUJAHKAN!
            ================================================================= */}
         {stage === 'voice_challenge' && (
-          <div className="portal-glass-card modal-pop-in w-full max-w-5xl rounded-3xl p-5 sm:p-7 text-white space-y-5 border-2 border-purple-400/75 my-auto">
+          <div className={`portal-glass-card modal-pop-in w-full max-w-5xl rounded-3xl p-5 sm:p-7 text-white space-y-5 border-2 border-purple-400/75 my-auto ${inspecting3D ? 'pointer-events-none' : 'pointer-events-auto'}`}>
             <div className="space-y-1 pb-3 border-b border-cyan-400/25">
               <div className="text-xs font-game font-bold text-purple-300 tracking-wider">
                 CABARAN 3 · SUARA EJEN: FIKIR DAN HUJAHKAN!
@@ -1886,7 +1825,7 @@ export function Mission2OperationAdventure({
             STAGE 5: PAPARAN KEJAYAAN – ECOWORLD BERJAYA DISELAMATKAN!
            ================================================================= */}
         {stage === 'victory' && (
-          <div className="portal-glass-card modal-pop-in w-full max-w-3xl rounded-3xl p-6 sm:p-8 text-center text-white space-y-5 border-2 border-amber-300 my-auto">
+          <div className={`portal-glass-card modal-pop-in w-full max-w-3xl rounded-3xl p-6 sm:p-8 text-center text-white space-y-5 border-2 border-amber-300 my-auto ${inspecting3D ? 'pointer-events-none' : 'pointer-events-auto'}`}>
             <div className="flex items-center justify-center gap-3">
               <Star className="w-9 h-9 text-amber-300 fill-amber-300 animate-bounce" />
               <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-emerald-400 via-teal-400 to-cyan-500 text-slate-950 flex items-center justify-center shadow-[0_0_30px_rgba(52,211,153,0.75)]">

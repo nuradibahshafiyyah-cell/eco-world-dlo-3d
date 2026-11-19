@@ -15,6 +15,7 @@ import {
 import { M1_CLUES_3D, M1_SCRIPT, M2_SCENES, M3_OPTS, PBL_STEPS } from '../data/gameData';
 import { Clue3D, MissionDef, UserAccount } from '../types/game';
 import { playSFX, setMusicState } from '../utils/sound';
+import { buildMalaysianTtsStyle, pickMalaysianSpeechVoice } from '../utils/malayVoice';
 import { Mission5RecordingPanel } from './Mission5RecordingPanel';
 
 interface MissionDrawerProps {
@@ -49,6 +50,8 @@ interface MissionDrawerProps {
     rubricScore: number,
     reflection: string
   ) => void;
+  m5IntroState?: { phase: 1 | 2 | 3 | 4 | 5; done: boolean };
+  onSkipM5Intro?: () => void;
 }
 
 interface RoomMeta {
@@ -114,39 +117,7 @@ const ROOM_META: Record<number, RoomMeta> = {
   },
 };
 
-const MALE_VOICE_RE =
-  /osman|andika|ardi|farid|adam|david|mark|daniel|rishi|alex|fred|george|guy|ryan|\bmale\b|lelaki/i;
-const FEMALE_MS_RE = /yasmin|amira|siti|nur|ain|zura|puteri|rina|female|woman|girl|ms-my-x-ms[bc]/i;
-const FEMALE_ID_RE =
-  /google bahasa indonesia|gadis|damayanti|indri|putri|sari|female|woman|girl/i;
-const ANY_FEMALE_RE =
-  /zira|samantha|victoria|karen|serena|aria|jenny|sonia|libby|female|woman|girl/i;
-
-function pickFemaleMalayVoice(voices: SpeechSynthesisVoice[]): {
-  voice: SpeechSynthesisVoice | null;
-  isConfirmedFemale: boolean;
-} {
-  if (!voices.length) return { voice: null, isConfirmedFemale: false };
-
-  const nonMale = voices.filter((v) => !MALE_VOICE_RE.test(v.name));
-  const msNonMale = nonMale.filter((v) => v.lang.toLowerCase().startsWith('ms'));
-  const idNonMale = nonMale.filter((v) => v.lang.toLowerCase().startsWith('id'));
-
-  const msFemale = msNonMale.find((v) => FEMALE_MS_RE.test(v.name));
-  if (msFemale) return { voice: msFemale, isConfirmedFemale: true };
-
-  const idFemale = idNonMale.find((v) => FEMALE_ID_RE.test(v.name));
-  if (idFemale) return { voice: idFemale, isConfirmedFemale: true };
-
-  if (idNonMale.length > 0) return { voice: idNonMale[0], isConfirmedFemale: true };
-  if (msNonMale.length > 0) return { voice: msNonMale[0], isConfirmedFemale: false };
-
-  const anyFemale = nonMale.find((v) => ANY_FEMALE_RE.test(v.name));
-  if (anyFemale) return { voice: anyFemale, isConfirmedFemale: true };
-
-  const msAny = voices.find((v) => v.lang.toLowerCase().startsWith('ms'));
-  return { voice: msAny || voices[0], isConfirmedFemale: false };
-}
+// Strict Malaysian Bahasa Melayu (ms-MY) voice selection via shared malayVoice utility
 
 export function MissionDrawer({
   mission,
@@ -164,9 +135,13 @@ export function MissionDrawer({
   onCompleteMission4,
   onUpdateMission4Argument,
   onCompleteMission5,
+  m5IntroState,
+  onSkipM5Intro,
 }: MissionDrawerProps) {
   const p = user.progress!;
   const meta = ROOM_META[mission.id] || ROOM_META[1];
+  const isM5 = mission.id === 5;
+  const isM5IntroPending = isM5 && Boolean(m5IntroState && !m5IntroState.done);
 
   // Room Phase: 'briefing' (showcases 3D room entrance + title) -> 'activity' -> optional 'inspect3d'
   const [phase, setPhase] = useState<'briefing' | 'activity' | 'inspect3d'>('briefing');
@@ -323,17 +298,19 @@ export function MissionDrawer({
       return;
     }
     window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(M1_SCRIPT);
     const liveVoices = window.speechSynthesis.getVoices();
     const pool = liveVoices.length > 0 ? liveVoices : voicesList;
-    const { voice, isConfirmedFemale } = pickFemaleMalayVoice(pool);
-    if (voice) {
-      utter.voice = voice;
-      utter.lang = voice.lang || 'ms-MY';
-    } else {
-      utter.lang = 'id-ID';
+    const { voice, isConfirmedFemale } = pickMalaysianSpeechVoice(pool, { preferFemale: true });
+    if (!voice) {
+      // Strict ms-MY guard: never fall back to Indonesian (id-ID) or English voices
+      setIsPlayingAudio(false);
+      setMusicState({ ducked: false });
+      return;
     }
-    utter.pitch = isConfirmedFemale ? 1.18 : 1.58;
+    const utter = new SpeechSynthesisUtterance(M1_SCRIPT);
+    utter.voice = voice;
+    utter.lang = voice.lang || 'ms-MY';
+    utter.pitch = isConfirmedFemale ? 1.14 : 1.38;
     utter.rate = 0.94;
     utter.onstart = () => {
       setIsPlayingAudio(true);
@@ -365,8 +342,9 @@ export function MissionDrawer({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text: M1_SCRIPT,
-            style:
-              'Warm, clear, expressive Malaysian Malay woman speaking naturally as Puan Aminah, a village resident reporting river pollution.',
+            style: buildMalaysianTtsStyle(
+              'Warm, clear, expressive Malaysian Malay woman speaking naturally as Puan Aminah, a village resident reporting river pollution to Year 6 pupils.'
+            ),
           }),
         });
         if (!resp.ok) throw new Error('Server TTS unavailable');
@@ -631,6 +609,15 @@ export function MissionDrawer({
   // BRIEFING / ROOM ENTRANCE MODE (Showcases 3D Virtual Room behind clean HUD)
   // ===========================================================================
   if (phase === 'briefing') {
+    const phaseLabels: Record<1 | 2 | 3 | 4 | 5, string> = {
+      1: 'FASA 1/5 · PENGENALAN STUDIO PODCAST',
+      2: 'FASA 2/5 · EJEN MEMASUKI STUDIO',
+      3: 'FASA 3/5 · EJEN MENUJU KE PENTAS',
+      4: 'FASA 4/5 · EJEN DUDUK DI KERUSI HOS',
+      5: 'FASA 5/5 · SIARAN LANGSUNG ON AIR!',
+    };
+    const activePhaseNum = m5IntroState?.phase ?? 1;
+
     return (
       <div className="fixed inset-0 top-12 z-40 flex flex-col justify-between p-4 sm:p-6 pointer-events-none">
         {/* Top Room Entrance HUD */}
@@ -649,55 +636,109 @@ export function MissionDrawer({
 
           <div className="flex items-center gap-2">
             {audioControlBar}
-            <div className="px-3.5 py-1.5 rounded-xl bg-slate-950/90 border border-emerald-400/60 text-xs font-game text-amber-300">
+            <div
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-game text-amber-300 ${
+                isM5
+                  ? 'bg-slate-950/75 backdrop-blur-xl border border-cyan-400/70 shadow-[0_0_20px_rgba(34,211,238,0.28)]'
+                  : 'bg-slate-950/90 border border-emerald-400/60'
+              }`}
+            >
               ⭐ +{mission.maxXp} XP · BILIK 3D AKTIF
             </div>
           </div>
         </div>
 
-        {/* Bottom-Center Entrance Card leaving upper/center 3D Room clearly visible */}
-        <div
-          className={`pointer-events-auto max-w-3xl w-full mx-auto rounded-3xl bg-slate-950/90 border-2 ${meta.accentBorder} p-5 sm:p-7 shadow-2xl text-center space-y-4`}
-        >
-          <div className="space-y-1.5">
-            <div className="game-subtitle-neon text-xs sm:text-sm font-bold tracking-[0.22em] text-teal-300 uppercase">
-              {meta.subtitle}
+        {/* During Misi 05 5-Phase Broadcast Intro: keep studio center completely clear */}
+        {isM5IntroPending ? (
+          <div className="pointer-events-auto max-w-xl w-full mx-auto rounded-2xl bg-slate-950/75 backdrop-blur-xl border border-cyan-400/70 shadow-[0_0_32px_rgba(168,85,247,0.35)] px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-block w-2.5 h-2.5 rounded-full ${
+                    activePhaseNum === 5
+                      ? 'bg-pink-500 animate-ping'
+                      : 'bg-cyan-400 animate-pulse'
+                  }`}
+                />
+                <span className="font-game text-xs sm:text-sm font-black tracking-wider text-cyan-200 truncate">
+                  {phaseLabels[activePhaseNum]}
+                </span>
+              </div>
+              <div className="w-full h-1.5 rounded-full bg-slate-800/90 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-400 via-purple-400 to-pink-500 transition-all duration-300"
+                  style={{ width: `${(activePhaseNum / 5) * 100}%` }}
+                />
+              </div>
             </div>
-            <h2 className={`text-2xl sm:text-4xl font-black tracking-wide leading-tight ${meta.titleClass}`}>
-              {meta.gameTitle}
-            </h2>
+            {onSkipM5Intro && (
+              <button
+                type="button"
+                onClick={() => {
+                  playSFX('click');
+                  onSkipM5Intro();
+                }}
+                className="btn-game-slate btn-game-sm px-3 py-1.5 text-[11px] font-game font-bold text-cyan-200 hover:text-white cursor-pointer shrink-0"
+              >
+                Langkau Intro →
+              </button>
+            )}
           </div>
+        ) : (
+          /* Bottom-Center Entrance Card leaving upper/center 3D Room clearly visible */
+          <div
+            className={`pointer-events-auto max-w-3xl w-full mx-auto rounded-3xl p-5 sm:p-7 shadow-2xl text-center space-y-4 ${
+              isM5
+                ? 'bg-slate-950/74 backdrop-blur-xl border-2 border-cyan-400/75 shadow-[0_0_40px_rgba(168,85,247,0.35)]'
+                : `bg-slate-950/90 border-2 ${meta.accentBorder}`
+            }`}
+          >
+            <div className="space-y-1.5">
+              <div className="game-subtitle-neon text-xs sm:text-sm font-bold tracking-[0.22em] text-teal-300 uppercase">
+                {meta.subtitle}
+              </div>
+              <h2 className={`text-2xl sm:text-4xl font-black tracking-wide leading-tight ${meta.titleClass}`}>
+                {meta.gameTitle}
+              </h2>
+            </div>
 
-          <div className="p-3.5 sm:p-4 rounded-2xl bg-slate-900/95 border border-slate-700 text-xs sm:text-sm text-slate-200 leading-relaxed max-w-2xl mx-auto">
-            <span className="font-game text-[11px] text-amber-300 block mb-1 uppercase tracking-wider">
-              OBJEKTIF MISI ({mission.focus})
-            </span>
-            {meta.objective}
-          </div>
+            <div
+              className={`p-3.5 sm:p-4 rounded-2xl text-xs sm:text-sm text-slate-200 leading-relaxed max-w-2xl mx-auto ${
+                isM5
+                  ? 'bg-slate-900/75 backdrop-blur-md border border-purple-400/45'
+                  : 'bg-slate-900/95 border border-slate-700'
+              }`}
+            >
+              <span className="font-game text-[11px] text-amber-300 block mb-1 uppercase tracking-wider">
+                OBJEKTIF MISI ({mission.focus})
+              </span>
+              {meta.objective}
+            </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
-            <button
-              type="button"
-              onClick={() => {
-                playSFX('portal');
-                setPhase('activity');
-              }}
-              className={`px-7 py-3.5 font-game text-sm sm:text-base font-black tracking-wider uppercase flex items-center gap-2 cursor-pointer ${meta.btnClass}`}
-            >
-              <Rocket className="w-4 h-4" /> {meta.startLabel}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                playSFX('click');
-                setPhase('inspect3d');
-              }}
-              className="btn-game-slate px-5 py-3.5 text-sky-200 font-game text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-            >
-              <Eye className="w-4 h-4" /> TINJAU BILIK 3D
-            </button>
+            <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  playSFX('portal');
+                  setPhase('activity');
+                }}
+                className={`px-7 py-3.5 font-game text-sm sm:text-base font-black tracking-wider uppercase flex items-center gap-2 cursor-pointer ${meta.btnClass}`}
+              >
+                <Rocket className="w-4 h-4" /> {meta.startLabel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  playSFX('click');
+                  setPhase('inspect3d');
+                }}
+                className="btn-game-slate px-5 py-3.5 text-sky-200 font-game text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <Eye className="w-4 h-4" /> TINJAU BILIK 3D
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     );
   }
@@ -708,10 +749,20 @@ export function MissionDrawer({
   return (
     <div className="fixed inset-0 top-12 z-40 flex items-center justify-end p-3 md:p-5 pb-24 sm:pb-24 pointer-events-none">
       <div
-        className={`pointer-events-auto w-full max-w-2xl max-h-[calc(100vh-148px)] bg-slate-950/95 border-2 ${meta.accentBorder} rounded-3xl shadow-2xl flex flex-col overflow-hidden text-slate-100`}
+        className={`pointer-events-auto w-full max-w-2xl max-h-[calc(100vh-148px)] rounded-3xl shadow-2xl flex flex-col overflow-hidden text-slate-100 ${
+          isM5
+            ? 'bg-slate-950/78 backdrop-blur-xl border-2 border-cyan-400/70 shadow-[0_0_40px_rgba(34,211,238,0.28)]'
+            : `bg-slate-950/95 border-2 ${meta.accentBorder}`
+        }`}
       >
         {/* Holographic Header */}
-        <div className="px-5 py-3.5 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
+        <div
+          className={`px-5 py-3.5 border-b flex flex-wrap items-center justify-between gap-3 ${
+            isM5
+              ? 'bg-slate-900/75 border-cyan-500/30'
+              : 'bg-slate-900 border-slate-800'
+          }`}
+        >
           <div className="min-w-0">
             <div className="game-subtitle-neon text-[11px] font-bold tracking-widest text-teal-300 uppercase">
               {meta.subtitle} · ⭐ +{mission.maxXp} XP

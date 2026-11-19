@@ -50,6 +50,8 @@ export interface EcoWorldCanvasProps {
   onCollectClue: (clue: Clue3D) => void;
   onHoverInfo: (label: string | null) => void;
   onProximityZoneChange?: (zoneId: number) => void;
+  onMission5IntroChange?: (status: { phase: 1 | 2 | 3 | 4 | 5; done: boolean }) => void;
+  m5SkipTrigger?: number;
   paused?: boolean;
 }
 
@@ -213,6 +215,8 @@ export function EcoWorldCanvas({
   onCollectClue,
   onHoverInfo,
   onProximityZoneChange,
+  onMission5IntroChange,
+  m5SkipTrigger = 0,
   paused = false,
 }: EcoWorldCanvasProps) {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -236,6 +240,8 @@ export function EcoWorldCanvas({
     onCollectClue,
     onHoverInfo,
     onProximityZoneChange,
+    onMission5IntroChange,
+    m5SkipTrigger,
     paused,
   });
   propsRef.current = {
@@ -256,6 +262,8 @@ export function EcoWorldCanvas({
     onCollectClue,
     onHoverInfo,
     onProximityZoneChange,
+    onMission5IntroChange,
+    m5SkipTrigger,
     paused,
   };
   const lastProxZoneRef = useRef<number>(0);
@@ -800,6 +808,10 @@ export function EcoWorldCanvas({
     let frameId = 0;
     let disposed = false;
     let lastFootstepIdx = -1;
+    let lastTickRoomId: number | null = null;
+    let lastM5SkipTrigger = propsRef.current.m5SkipTrigger ?? 0;
+    let lastM5Phase = 0;
+    let lastM5Done = false;
 
     function afterDraw(cb: () => void) {
       const gl = renderer.getContext() as WebGL2RenderingContext;
@@ -850,9 +862,29 @@ export function EcoWorldCanvas({
       });
 
       if (activeRoom) {
+        if (lastTickRoomId !== activeRoom.id) {
+          lastTickRoomId = activeRoom.id;
+          userOrbitingRef.current = false;
+          if (activeRoom.id === 5) {
+            activeRoom.resetIntro?.();
+            lastM5Phase = 0;
+            lastM5Done = false;
+          }
+        }
+        if (activeRoom.id === 5) {
+          if (curUser?.avatar) {
+            activeRoom.setAvatarId?.(curUser.avatar);
+          }
+          const curSkip = propsRef.current.m5SkipTrigger ?? 0;
+          if (curSkip !== lastM5SkipTrigger) {
+            lastM5SkipTrigger = curSkip;
+            activeRoom.skipIntro?.();
+          }
+        }
+
         skyColor.setHex(activeRoom.bgColor);
         (scene.fog as THREE.FogExp2).color.setHex(activeRoom.fogColor);
-        (scene.fog as THREE.FogExp2).density = 0.012;
+        (scene.fog as THREE.FogExp2).density = activeRoom.id === 5 ? 0.0085 : 0.012;
         controls.minDistance = 4;
         controls.maxDistance = 24;
         controls.maxPolarAngle = Math.PI / 2.02;
@@ -862,7 +894,19 @@ export function EcoWorldCanvas({
         const roomRestored = Boolean(mp && ('submitted' in mp ? mp.submitted : mp.completed));
         activeRoom.animate(elapsed, dt, roomRestored);
 
-        if (!userOrbitingRef.current) {
+        if (activeRoom.updateIntroCamera) {
+          const status = activeRoom.updateIntroCamera(
+            camera,
+            controls.target,
+            dt,
+            userOrbitingRef.current
+          );
+          if (status.phase !== lastM5Phase || status.done !== lastM5Done) {
+            lastM5Phase = status.phase;
+            lastM5Done = status.done;
+            propsRef.current.onMission5IntroChange?.(status);
+          }
+        } else if (!userOrbitingRef.current) {
           _desiredCamPos.set(...activeRoom.cameraPos);
           _desiredTarget.set(...activeRoom.cameraTarget);
           camera.position.x = THREE.MathUtils.damp(camera.position.x, _desiredCamPos.x, 5.2, dt);
@@ -883,6 +927,7 @@ export function EcoWorldCanvas({
         }
         return;
       } else {
+        lastTickRoomId = null;
         skyColor.setHex(0x38bdf8);
         (scene.fog as THREE.FogExp2).color.setHex(0x7dd3fc);
         (scene.fog as THREE.FogExp2).density = 0.0048;

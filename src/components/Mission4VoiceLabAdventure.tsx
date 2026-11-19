@@ -1,11 +1,18 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   AlertCircle,
+  ArrowDown,
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
   Award,
+  Camera,
   CheckCircle2,
+  Compass,
+  Eye,
+  EyeOff,
   FileText,
   Headphones,
   Lightbulb,
@@ -23,7 +30,9 @@ import {
 } from 'lucide-react';
 import { AVATARS } from '../data/gameData';
 import { animateHumanAgent, buildHumanEcoAgent } from '../three/humanAgents';
+import { buildSoundStudioWorld, StudioCameraPreset } from '../three/soundStudioWorld';
 import { MissionDef, UserAccount } from '../types/game';
+import { buildMalaysianTtsStyle, pickMalaysianSpeechVoice } from '../utils/malayVoice';
 import { playSFX, setMusicState } from '../utils/sound';
 
 export interface Mission4VoiceLabAdventureProps {
@@ -116,28 +125,6 @@ const ARGUMENT_FIELDS: {
   },
 ];
 
-const MALE_VOICE_RE =
-  /osman|andika|ardi|farid|adam|david|mark|daniel|alex|fred|george|guy|ryan|\bmale\b|lelaki/i;
-const FEMALE_MS_RE = /yasmin|amira|siti|nur|ain|zura|puteri|rina|female|woman|girl|ms-my-x-ms[bc]/i;
-
-function pickMalaySpeechVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
-  const malayPool = voices.filter((v) => {
-    const lang = v.lang.toLowerCase();
-    return lang.startsWith('ms') || lang.startsWith('id');
-  });
-  if (malayPool.length === 0) return null;
-  const msVoice = malayPool.find((v) => v.lang.toLowerCase().startsWith('ms'));
-  if (msVoice) {
-    const expressive = malayPool.find(
-      (v) =>
-        v.lang.toLowerCase().startsWith('ms') &&
-        !MALE_VOICE_RE.test(v.name) &&
-        FEMALE_MS_RE.test(v.name)
-    );
-    return expressive || msVoice;
-  }
-  return malayPool[0];
-}
 
 /* ============================================================================
    CUSTOM ILLUSTRATION: LAPORAN PENCEMARAN TAMAN HARMONI
@@ -285,15 +272,93 @@ export function Mission4VoiceLabAdventure({
   const [transferPhase, setTransferPhase] = useState<'sending' | 'done'>('sending');
   const transferTimerRef = useRef<number | null>(null);
 
-  // Three.js Makmal Suara Holographic Backdrop
+  // Three.js Interactive Future Sound Studio Backdrop + Exploration State
   const mountRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<Mission4Stage>(stage);
   stageRef.current = stage;
 
+  const [entrancePhase, setEntrancePhase] = useState<'entering' | 'ready'>('entering');
+  const entrancePhaseRef = useRef<'entering' | 'ready'>('entering');
+  const skipEntranceRef = useRef(false);
+
+  const [exploreStudioMode, setExploreStudioMode] = useState(false);
+  const [cameraPreset, setCameraPreset] = useState<StudioCameraPreset>('follow');
+  const cameraPresetRef = useRef<StudioCameraPreset>('follow');
+  cameraPresetRef.current = cameraPreset;
+
+  const audioStatusRef = useRef<AudioPlayStatus>(audioStatus);
+  audioStatusRef.current = audioStatus;
+
+  const keysRef = useRef<Record<string, boolean>>({});
+  const dpadRef = useRef<{ x: number; z: number }>({ x: 0, z: 0 });
+  const yawOffsetRef = useRef<number>(0);
+
   const avatarDef = AVATARS.find((a) => a.id === user.avatar) || AVATARS[0];
 
+  const handleSkipEntrance = useCallback(() => {
+    skipEntranceRef.current = true;
+    entrancePhaseRef.current = 'ready';
+    setEntrancePhase('ready');
+  }, []);
+
+  const setTouchDirection = useCallback((x: number, z: number) => {
+    dpadRef.current.x = x;
+    dpadRef.current.z = z;
+  }, []);
+
+  // Keyboard movement listeners (WASD + Arrow Keys), safely disabled inside form inputs
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        (active.tagName === 'INPUT' ||
+          active.tagName === 'TEXTAREA' ||
+          active.tagName === 'SELECT' ||
+          active.isContentEditable)
+      ) {
+        return;
+      }
+      const key = e.key.toLowerCase();
+      if (
+        key === 'w' ||
+        key === 'a' ||
+        key === 's' ||
+        key === 'd' ||
+        key === 'arrowup' ||
+        key === 'arrowdown' ||
+        key === 'arrowleft' ||
+        key === 'arrowright'
+      ) {
+        if (key.startsWith('arrow')) {
+          e.preventDefault();
+        }
+        keysRef.current[key] = true;
+      }
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      delete keysRef.current[key];
+    };
+
+    const onBlur = () => {
+      keysRef.current = {};
+      dpadRef.current = { x: 0, z: 0 };
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+
   // =========================================================================
-  // LIVE 3D FUTURISTIC MAKMAL SUARA BACKDROP
+  // LIVE 3D INTERACTIVE FUTURE SOUND STUDIO SCENE
   // =========================================================================
   useEffect(() => {
     const container = mountRef.current;
@@ -312,90 +377,77 @@ export function Mission4VoiceLabAdventure({
     const isSoftwareGl = /swiftshader|llvmpipe|softpipe/i.test(glName);
 
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isSoftwareGl ? 1 : 2));
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setSize(container.clientWidth, Math.max(1, container.clientHeight));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 1.24;
+    renderer.shadowMap.enabled = !isSoftwareGl;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
 
+    const maxAnisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy() || 1);
+
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#041126');
-    scene.fog = new THREE.FogExp2('#071d3d', 0.017);
+    const baseBgColor = new THREE.Color('#0b1a3d');
+    const transferBgColor = new THREE.Color('#0c2f44');
+    scene.background = baseBgColor.clone();
+    scene.fog = new THREE.FogExp2('#0e214d', 0.014);
+
+    // Environment reflection map for realistic metallic & glass surfaces
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const roomEnv = new RoomEnvironment();
+    const envTarget = pmremGenerator.fromScene(roomEnv, 0.04);
+    scene.environment = envTarget.texture;
+    roomEnv.dispose();
 
     const camera = new THREE.PerspectiveCamera(
-      50,
+      52,
       container.clientWidth / Math.max(1, container.clientHeight),
       0.1,
-      160
+      140
     );
-    camera.position.set(0, 4.8, 16.5);
+    camera.position.set(0, 2.75, 16.5);
 
-    const hemi = new THREE.HemisphereLight('#67e8f9', '#064e3b', 1.25);
+    // Vibrant Neon Studio Lighting (Cyan, Turquoise, Purple, Magenta, Emerald, Yellow accent)
+    const hemi = new THREE.HemisphereLight('#67e8f9', '#4c1d95', 1.35);
     scene.add(hemi);
-    const keyLight = new THREE.DirectionalLight('#fef08a', 1.35);
-    keyLight.position.set(10, 18, 12);
+
+    const keyLight = new THREE.DirectionalLight('#fef9c3', 1.45);
+    keyLight.position.set(7, 14, 11);
+    if (!isSoftwareGl) {
+      keyLight.castShadow = true;
+      keyLight.shadow.mapSize.set(1024, 1024);
+      keyLight.shadow.camera.near = 1;
+      keyLight.shadow.camera.far = 42;
+      keyLight.shadow.camera.left = -13;
+      keyLight.shadow.camera.right = 13;
+      keyLight.shadow.camera.top = 13;
+      keyLight.shadow.camera.bottom = -13;
+      keyLight.shadow.bias = -0.0005;
+    }
     scene.add(keyLight);
-    const cyanLight = new THREE.PointLight('#22d3ee', 2.8, 45);
-    cyanLight.position.set(-7, 6, -3);
+
+    const cyanLight = new THREE.PointLight('#22d3ee', 3.4, 38);
+    cyanLight.position.set(-6.2, 5.2, -1.5);
     scene.add(cyanLight);
-    const emeraldLight = new THREE.PointLight('#10b981', 2.4, 45);
-    emeraldLight.position.set(7, 5, -4);
+
+    const magentaLight = new THREE.PointLight('#ec4899', 3.0, 38);
+    magentaLight.position.set(6.5, 5.4, -2.5);
+    scene.add(magentaLight);
+
+    const emeraldLight = new THREE.PointLight('#34d399', 2.6, 36);
+    emeraldLight.position.set(0, 4.8, 6.2);
     scene.add(emeraldLight);
 
-    // Makmal Suara Circular Stage Platform
-    const stageDeck = new THREE.Mesh(
-      new THREE.CylinderGeometry(8.8, 9.8, 0.7, 48),
-      new THREE.MeshStandardMaterial({ color: '#0a2240', metalness: 0.65, roughness: 0.25 })
-    );
-    stageDeck.position.y = -0.35;
-    scene.add(stageDeck);
+    const purpleLight = new THREE.PointLight('#a855f7', 2.8, 36);
+    purpleLight.position.set(0, 7.6, -7.2);
+    scene.add(purpleLight);
 
-    const rimMat = new THREE.MeshBasicMaterial({ color: '#22d3ee' });
-    const stageRim = new THREE.Mesh(new THREE.TorusGeometry(8.85, 0.09, 12, 64), rimMat);
-    stageRim.rotation.x = Math.PI / 2;
-    stageRim.position.y = 0.02;
-    scene.add(stageRim);
+    // Build Future Sound Studio 3D Environment
+    const studio = buildSoundStudioWorld(maxAnisotropy, isSoftwareGl);
+    scene.add(studio.group);
 
-    // Holographic Soundwave Rings in Makmal Suara
-    const holoGroup = new THREE.Group();
-    holoGroup.position.set(0, 3.6, -4.2);
-    scene.add(holoGroup);
-
-    const coreMat = new THREE.MeshStandardMaterial({
-      color: '#22d3ee',
-      emissive: '#0ea5e9',
-      emissiveIntensity: 0.65,
-      wireframe: true,
-    });
-    const coreSphere = new THREE.Mesh(new THREE.OctahedronGeometry(1.75, 2), coreMat);
-    holoGroup.add(coreSphere);
-
-    const outerRingMat = new THREE.MeshBasicMaterial({ color: '#34d399' });
-    const outerRing = new THREE.Mesh(new THREE.TorusGeometry(3.1, 0.08, 12, 64), outerRingMat);
-    outerRing.rotation.x = Math.PI / 2.6;
-    holoGroup.add(outerRing);
-
-    const goldRingMat = new THREE.MeshBasicMaterial({ color: '#facc15' });
-    const goldRing = new THREE.Mesh(new THREE.TorusGeometry(2.5, 0.05, 10, 48), goldRingMat);
-    goldRing.rotation.y = Math.PI / 3;
-    holoGroup.add(goldRing);
-
-    // Animated Acoustic Equalizer Pillars behind Hologram
-    const eqBars: THREE.Mesh[] = [];
-    const barGeo = new THREE.BoxGeometry(0.45, 1, 0.45);
-    for (let i = -5; i <= 5; i++) {
-      const mat = new THREE.MeshStandardMaterial({
-        color: i % 2 === 0 ? '#22d3ee' : '#34d399',
-        emissive: i % 2 === 0 ? '#0891b2' : '#059669',
-        emissiveIntensity: 0.75,
-        roughness: 0.25,
-      });
-      const bar = new THREE.Mesh(barGeo, mat);
-      bar.position.set(i * 1.1, 1.4, -7.8);
-      scene.add(bar);
-      eqBars.push(bar);
-    }
-
-    // Contact shadow + 3D EcoWorld Agent
+    // Contact shadow + 3D EcoWorld Agent (spawns outside studio airlock doorway)
     const shadowCanvas = document.createElement('canvas');
     shadowCanvas.width = 128;
     shadowCanvas.height = 128;
@@ -407,34 +459,50 @@ export function Mission4VoiceLabAdventure({
     sCtx.fillRect(0, 0, 128, 128);
     const shadowTex = new THREE.CanvasTexture(shadowCanvas);
 
-    const agentRig = buildHumanEcoAgent(avatarDef.id, shadowTex, { showPedestal: true });
-    agentRig.group.position.set(-5.0, 0, 2.0);
-    agentRig.group.rotation.y = 0.52;
-    agentRig.group.scale.setScalar(1.3);
+    const agentRig = buildHumanEcoAgent(avatarDef.id, shadowTex, { showPedestal: false });
+    agentRig.group.position.set(0, 0, 12.6);
+    agentRig.group.rotation.y = Math.PI;
+    agentRig.group.scale.setScalar(1.22);
     scene.add(agentRig.group);
 
-    // Floating Data / Eco Particles
-    const partCount = isSoftwareGl ? 60 : 150;
-    const partPos = new Float32Array(partCount * 3);
-    for (let i = 0; i < partCount; i++) {
-      partPos[i * 3] = (Math.random() - 0.5) * 32;
-      partPos[i * 3 + 1] = Math.random() * 13 + 0.5;
-      partPos[i * 3 + 2] = (Math.random() - 0.5) * 24 - 3;
-    }
-    const partGeo = new THREE.BufferGeometry();
-    partGeo.setAttribute('position', new THREE.BufferAttribute(partPos, 3));
-    const partMat = new THREE.PointsMaterial({
-      color: '#67e8f9',
-      size: 0.22,
-      transparent: true,
-      opacity: 0.85,
-    });
-    const particles = new THREE.Points(partGeo, partMat);
-    scene.add(particles);
+    // Pointer-drag camera orbit angle on canvas (allows inspecting studio corners smoothly)
+    let isDragging = false;
+    let lastPointerX = 0;
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      isDragging = true;
+      lastPointerX = e.clientX;
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (!isDragging) return;
+      const dx = e.clientX - lastPointerX;
+      lastPointerX = e.clientX;
+      yawOffsetRef.current = THREE.MathUtils.clamp(
+        yawOffsetRef.current - dx * 0.0055,
+        -1.35,
+        1.35
+      );
+    };
+    const onPointerUp = () => {
+      isDragging = false;
+    };
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+
+    // Pre-allocated vectors for GC-free animation loop
+    const desiredCamPos = new THREE.Vector3();
+    const desiredLookAt = new THREE.Vector3();
+    const currentLookAt = new THREE.Vector3(0, 1.9, 6.0);
+    const camForward = new THREE.Vector3();
+    const camRight = new THREE.Vector3();
+    const moveVec = new THREE.Vector3();
 
     const clock = new THREE.Clock();
     let frameId = 0;
     let disposed = false;
+    let entranceCompleteSignaled = false;
+    let doorOpenProgress = 0;
 
     const onResize = () => {
       if (!container) return;
@@ -461,37 +529,210 @@ export function Mission4VoiceLabAdventure({
       const st = stageRef.current;
       const isTransfer = st === 'transfer_success';
 
-      const targetBg = new THREE.Color(isTransfer ? '#064e3b' : '#041126');
-      (scene.background as THREE.Color).lerp(targetBg, dt * 2.2);
+      (scene.background as THREE.Color).lerp(
+        isTransfer ? transferBgColor : baseBgColor,
+        dt * 2.4
+      );
 
-      coreSphere.rotation.y = elapsed * (isTransfer ? 1.1 : 0.42);
-      outerRing.rotation.z = elapsed * (isTransfer ? 1.3 : 0.5);
-      goldRing.rotation.x = elapsed * 0.6;
-      coreMat.emissive.set(isTransfer ? '#34d399' : '#0ea5e9');
-      rimMat.color.set(isTransfer ? '#fde047' : '#22d3ee');
-      partMat.color.set(isTransfer ? '#fef08a' : '#67e8f9');
+      let isMoving = false;
+      const preset = cameraPresetRef.current;
 
-      eqBars.forEach((bar, idx) => {
-        const amp = isTransfer ? 3.2 : 1.7;
-        const hScale = 0.7 + Math.abs(Math.sin(elapsed * 2.8 + idx * 0.6)) * amp;
-        bar.scale.y += (hScale - bar.scale.y) * Math.min(1, dt * 10);
-        bar.position.y = bar.scale.y * 0.5;
+      // -------------------------------------------------------------------
+      // 1. CINEMATIC STUDIO DOOR ENTRANCE SEQUENCE (0 -> 2.35s)
+      // -------------------------------------------------------------------
+      if (entrancePhaseRef.current === 'entering' && !skipEntranceRef.current) {
+        doorOpenProgress = THREE.MathUtils.clamp(elapsed / 1.05, 0, 1);
+
+        if (elapsed < 0.35) {
+          agentRig.group.position.set(0, 0, 12.6);
+          agentRig.group.rotation.y = Math.PI;
+          desiredCamPos.set(0, 2.75, 16.5);
+          desiredLookAt.set(0, 2.1, 8.2);
+        } else if (elapsed < 2.25) {
+          const walkT = THREE.MathUtils.clamp((elapsed - 0.35) / 1.9, 0, 1);
+          const smoothT = walkT * walkT * (3 - 2 * walkT);
+          const nx = THREE.MathUtils.lerp(0, -2.6, smoothT);
+          const nz = THREE.MathUtils.lerp(12.6, 2.8, smoothT);
+          const ny = studio.getFloorHeightAt(nx, nz);
+          agentRig.group.position.set(nx, ny, nz);
+          agentRig.group.rotation.y = THREE.MathUtils.lerp(Math.PI, Math.PI + 0.27, smoothT);
+          isMoving = true;
+
+          // Cinematic follow camera gliding smoothly through doorway into the studio
+          desiredCamPos.set(
+            THREE.MathUtils.lerp(0, -1.6, smoothT),
+            THREE.MathUtils.lerp(2.75, 3.65, smoothT),
+            THREE.MathUtils.lerp(15.2, 8.9, smoothT)
+          );
+          desiredLookAt.set(
+            THREE.MathUtils.lerp(0, 0, smoothT),
+            THREE.MathUtils.lerp(2.0, 2.3, smoothT),
+            THREE.MathUtils.lerp(6.5, -2.8, smoothT)
+          );
+        } else {
+          agentRig.group.position.set(-2.6, studio.getFloorHeightAt(-2.6, 2.8), 2.8);
+          agentRig.group.rotation.y = 0.32;
+          if (!entranceCompleteSignaled) {
+            entranceCompleteSignaled = true;
+            entrancePhaseRef.current = 'ready';
+            setEntrancePhase('ready');
+          }
+        }
+      } else {
+        // Ensure agent is inside the studio if user skipped entrance early
+        if (agentRig.group.position.z > 9.8) {
+          agentRig.group.position.set(-2.6, studio.getFloorHeightAt(-2.6, 2.8), 2.8);
+          agentRig.group.rotation.y = 0.32;
+        }
+        doorOpenProgress = THREE.MathUtils.damp(doorOpenProgress, 1, 4.5, dt);
+
+        // -----------------------------------------------------------------
+        // 2. INTERACTIVE AGENT EXPLORATION (WASD / ARROWS / MOBILE D-PAD)
+        // -----------------------------------------------------------------
+        const k = keysRef.current;
+        const inputRight =
+          (k['d'] || k['arrowright'] ? 1 : 0) -
+          (k['a'] || k['arrowleft'] ? 1 : 0) +
+          dpadRef.current.x;
+        const inputFwd =
+          (k['w'] || k['arrowup'] ? 1 : 0) -
+          (k['s'] || k['arrowdown'] ? 1 : 0) +
+          dpadRef.current.z;
+
+        const mag = Math.hypot(inputRight, inputFwd);
+        if (mag > 0.05) {
+          isMoving = true;
+          const normR = inputRight / Math.max(1, mag);
+          const normF = inputFwd / Math.max(1, mag);
+
+          // Camera-relative ground plane movement
+          camera.getWorldDirection(camForward);
+          camForward.y = 0;
+          if (camForward.lengthSq() < 0.0001) camForward.set(0, 0, -1);
+          camForward.normalize();
+          camRight.set(-camForward.z, 0, camForward.x);
+
+          moveVec
+            .set(0, 0, 0)
+            .addScaledVector(camForward, normF)
+            .addScaledVector(camRight, normR)
+            .normalize();
+
+          const speed = 4.6;
+          const nextRawX = agentRig.group.position.x + moveVec.x * speed * dt;
+          const nextRawZ = agentRig.group.position.z + moveVec.z * speed * dt;
+          const clamped = studio.clampPosition(nextRawX, nextRawZ);
+          const targetY = studio.getFloorHeightAt(clamped.x, clamped.z);
+
+          agentRig.group.position.x = clamped.x;
+          agentRig.group.position.z = clamped.z;
+          agentRig.group.position.y = THREE.MathUtils.damp(
+            agentRig.group.position.y,
+            targetY,
+            12,
+            dt
+          );
+
+          const targetRot = Math.atan2(moveVec.x, moveVec.z);
+          let diff = targetRot - agentRig.group.rotation.y;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          agentRig.group.rotation.y += diff * Math.min(1, dt * 11);
+        }
+
+        // -----------------------------------------------------------------
+        // 3. SMOOTH MULTI-ANGLE CAMERA FOLLOW
+        // -----------------------------------------------------------------
+        const ax = agentRig.group.position.x;
+        const ay = agentRig.group.position.y;
+        const az = agentRig.group.position.z;
+        const yaw = yawOffsetRef.current;
+
+        if (preset === 'wide') {
+          const dist = 14.2;
+          desiredCamPos.set(
+            Math.sin(yaw * 0.9) * dist * 0.65,
+            5.4 + Math.cos(elapsed * 0.25) * 0.15,
+            8.8 + Math.cos(yaw * 0.6) * 2.2
+          );
+          desiredLookAt.set(ax * 0.35, 2.3, -2.5);
+        } else if (preset === 'console') {
+          desiredCamPos.set(
+            1.6 + Math.sin(yaw) * 3.2,
+            3.35,
+            3.4 + Math.cos(yaw) * 1.4
+          );
+          desiredLookAt.set(3.4, 1.85, -2.2);
+        } else {
+          // 'follow': smooth third-person studio camera following agent
+          const followDist = 6.8;
+          desiredCamPos.set(
+            THREE.MathUtils.clamp(ax * 0.72 + Math.sin(yaw) * followDist, -9.8, 9.8),
+            ay + 3.45,
+            THREE.MathUtils.clamp(az + Math.cos(yaw) * followDist, -1.8, 10.6)
+          );
+          desiredLookAt.set(
+            ax * 0.65,
+            ay + 1.85,
+            az - 3.4
+          );
+        }
+      }
+
+      // Smoothly damp camera position and look-at target
+      const dampSpeed = entrancePhaseRef.current === 'entering' ? 3.8 : 5.2;
+      camera.position.x = THREE.MathUtils.damp(camera.position.x, desiredCamPos.x, dampSpeed, dt);
+      camera.position.y = THREE.MathUtils.damp(camera.position.y, desiredCamPos.y, dampSpeed, dt);
+      camera.position.z = THREE.MathUtils.damp(camera.position.z, desiredCamPos.z, dampSpeed, dt);
+
+      currentLookAt.x = THREE.MathUtils.damp(currentLookAt.x, desiredLookAt.x, dampSpeed, dt);
+      currentLookAt.y = THREE.MathUtils.damp(currentLookAt.y, desiredLookAt.y, dampSpeed, dt);
+      currentLookAt.z = THREE.MathUtils.damp(currentLookAt.z, desiredLookAt.z, dampSpeed, dt);
+      camera.lookAt(currentLookAt);
+
+      // Animate studio screens, hologram, faders, equalizer bars, doors, light beams & particles
+      studio.animate(elapsed, dt, {
+        doorOpen: doorOpenProgress,
+        audioActive: audioStatusRef.current === 'playing',
+        transferMode: isTransfer,
       });
 
-      particles.rotation.y = elapsed * 0.04;
+      // Animate EcoWorld Agent
       animateHumanAgent(agentRig, elapsed, dt, {
-        isMoving: false,
+        isMoving,
         hovered: isTransfer || st === 'call',
         selected: true,
       });
 
-      camera.position.x = Math.sin(elapsed * 0.22) * 1.1;
-      camera.position.y = 4.7 + Math.cos(elapsed * 0.28) * 0.25;
-      camera.lookAt(0, 2.5, -2.5);
+      // Dynamic RGB neon point light pulsing
+      cyanLight.intensity = 3.1 + Math.sin(elapsed * 2.1) * 0.55;
+      magentaLight.intensity = 2.8 + Math.cos(elapsed * 1.7) * 0.55;
+      emeraldLight.intensity = (isTransfer ? 3.6 : 2.5) + Math.sin(elapsed * 2.6) * 0.45;
 
       renderer.render(scene, camera);
 
-      if (isSoftwareGl) {
+      if (isSoftwareGl && typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext) {
+        const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (sync) {
+          gl.flush();
+          const pollFence = () => {
+            if (disposed) {
+              gl.deleteSync(sync);
+              return;
+            }
+            const status = gl.clientWaitSync(sync, 0, 0);
+            if (status === gl.WAIT_FAILED || status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED) {
+              gl.deleteSync(sync);
+              frameId = window.setTimeout(() => requestAnimationFrame(renderLoop), 20);
+            } else {
+              frameId = window.setTimeout(pollFence, 8);
+            }
+          };
+          frameId = window.setTimeout(pollFence, 8);
+          return;
+        }
+        frameId = window.setTimeout(() => requestAnimationFrame(renderLoop), 65);
+      } else if (isSoftwareGl) {
         frameId = window.setTimeout(() => requestAnimationFrame(renderLoop), 65);
       } else {
         frameId = requestAnimationFrame(renderLoop);
@@ -505,18 +746,14 @@ export function Mission4VoiceLabAdventure({
       cancelAnimationFrame(frameId);
       clearTimeout(frameId);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
-      scene.traverse((obj) => {
-        if (obj instanceof THREE.Mesh || obj instanceof THREE.Points) {
-          obj.geometry?.dispose();
-          if (Array.isArray(obj.material)) {
-            obj.material.forEach((m) => m.dispose());
-          } else {
-            obj.material?.dispose();
-          }
-        }
-      });
+      studio.dispose();
       shadowTex.dispose();
+      envTarget.dispose();
+      pmremGenerator.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === container) {
         container.removeChild(renderer.domElement);
@@ -557,7 +794,7 @@ export function Mission4VoiceLabAdventure({
     (key: string, scriptText: string) => {
       if ('speechSynthesis' in window) {
         const voices = window.speechSynthesis.getVoices();
-        const malayVoice = pickMalaySpeechVoice(voices);
+        const { voice: malayVoice } = pickMalaysianSpeechVoice(voices);
         if (malayVoice) {
           window.speechSynthesis.cancel();
           audioModeRef.current = 'speech';
@@ -590,12 +827,12 @@ export function Mission4VoiceLabAdventure({
         }
       }
 
-      // Strict Bahasa Melayu guard: Never fall back to English voice!
+      // Strict Bahasa Melayu Malaysia (ms-MY) guard: Never fall back to Indonesian (id-ID) or English voice!
       audioModeRef.current = 'silent';
       setAudioStatus('playing');
       setMusicState({ suppressedForAudio: false });
       setAudioNotice(
-        'Pelayar ini tidak mempunyai enjin suara Bahasa Melayu tempatan. Sila baca teks lengkap pada skrin (tiada suara Inggeris digunakan).'
+        'Pelayar ini tidak mempunyai enjin suara Bahasa Melayu Malaysia (ms-MY) tempatan. Sila baca teks lengkap pada skrin (tiada suara Bahasa Indonesia atau Inggeris digunakan).'
       );
       silentTimerRef.current = window.setTimeout(() => {
         markAudioEnded(key);
@@ -617,7 +854,7 @@ export function Mission4VoiceLabAdventure({
           const resp = await fetch('/api/tts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: scriptText, style: stylePrompt }),
+            body: JSON.stringify({ text: scriptText, style: buildMalaysianTtsStyle(stylePrompt) }),
           });
           if (!resp.ok) throw new Error('TTS unavailable');
           const data = (await resp.json()) as { audioBase64?: string; mimeType?: string };
@@ -695,9 +932,9 @@ export function Mission4VoiceLabAdventure({
     }
   };
 
-  // Auto-play Langkah 1 audio ONCE on entry
+  // Auto-play Langkah 1 audio ONCE after entrance completes
   useEffect(() => {
-    if (stage === 'call' && !callAutoStartedRef.current) {
+    if (stage === 'call' && entrancePhase === 'ready' && !callAutoStartedRef.current) {
       callAutoStartedRef.current = true;
       playContinuousAudio(
         'call',
@@ -705,7 +942,7 @@ export function Mission4VoiceLabAdventure({
         'Speak in clear, warm, inspiring standard Malaysian Bahasa Melayu (Bahasa Melayu baku Malaysia) like the Makmal Suara Commander welcoming Year 6 primary school hero agents.'
       );
     }
-  }, [stage, playContinuousAudio]);
+  }, [stage, entrancePhase, playContinuousAudio]);
 
   // Auto-play Langkah 2 pollution report ONCE on first entry
   useEffect(() => {
@@ -833,12 +1070,16 @@ export function Mission4VoiceLabAdventure({
 
   return (
     <div className="fixed inset-0 z-40 overflow-hidden bg-slate-950 select-none">
-      {/* Live 3D Makmal Suara Canvas */}
-      <div ref={mountRef} className="absolute inset-0 w-full h-full" aria-hidden="true" />
+      {/* Live 3D Makmal Suara Interactive Canvas */}
+      <div
+        ref={mountRef}
+        className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing"
+        aria-hidden="true"
+      />
 
       {/* Top HUD Bar */}
-      <header className="relative z-20 px-3 sm:px-6 pt-3 flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex items-center gap-2.5 flex-wrap">
+      <header className="relative z-20 px-3 sm:px-6 pt-3 flex flex-wrap items-center justify-between gap-2.5 pointer-events-none">
+        <div className="flex items-center gap-2.5 flex-wrap pointer-events-auto">
           <button
             type="button"
             onClick={() => {
@@ -846,12 +1087,12 @@ export function Mission4VoiceLabAdventure({
               stopCurrentAudio();
               onClose();
             }}
-            className="btn-game-slate btn-game-sm px-3.5 py-2 text-xs font-game font-black text-white flex items-center gap-1.5 cursor-pointer"
+            className="btn-game-slate btn-game-sm px-3.5 py-2 text-xs font-game font-black text-white flex items-center gap-1.5 cursor-pointer shadow-[0_0_20px_rgba(34,211,238,0.25)]"
           >
             <ArrowLeft className="w-4 h-4 text-cyan-300" /> Peta Misi
           </button>
 
-          <div className="px-3.5 py-1.5 rounded-2xl bg-slate-950/90 border border-cyan-400/50 backdrop-blur-md flex items-center gap-2 shadow-lg">
+          <div className="px-3.5 py-1.5 rounded-2xl bg-slate-950/75 border border-cyan-400/60 backdrop-blur-xl flex items-center gap-2 shadow-[0_0_25px_rgba(34,211,238,0.28)]">
             <Radio className="w-4 h-4 text-cyan-300 animate-pulse" />
             <span className="font-game text-xs sm:text-sm font-black text-white tracking-wide uppercase">
               MISI 04: {mission.shortTitle || 'MAKMAL SUARA'}
@@ -859,9 +1100,37 @@ export function Mission4VoiceLabAdventure({
           </div>
         </div>
 
-        {/* Stepper & Audio Controls */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-2xl bg-slate-950/90 border border-slate-700/80 backdrop-blur-md text-[11px] font-game font-bold">
+        {/* Stepper, Studio Explore Toggle & Audio Controls */}
+        <div className="flex items-center gap-2 flex-wrap pointer-events-auto">
+          {entrancePhase === 'ready' && (
+            <button
+              type="button"
+              onClick={() => {
+                playSFX('click');
+                setExploreStudioMode((v) => !v);
+              }}
+              className={`px-3 py-1.5 rounded-2xl border backdrop-blur-xl text-xs font-game font-black flex items-center gap-1.5 cursor-pointer transition-all shadow-lg ${
+                exploreStudioMode
+                  ? 'bg-gradient-to-r from-cyan-400 to-purple-500 text-slate-950 border-cyan-300 shadow-[0_0_25px_rgba(34,211,238,0.5)]'
+                  : 'bg-slate-950/75 text-cyan-200 border-purple-400/60 hover:border-cyan-300 shadow-[0_0_20px_rgba(168,85,247,0.25)]'
+              }`}
+              title={exploreStudioMode ? 'Kembali ke Panel Misi' : 'Teroka Studio 3D dengan Ejen'}
+            >
+              {exploreStudioMode ? (
+                <>
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>Panel Misi</span>
+                </>
+              ) : (
+                <>
+                  <Compass className="w-3.5 h-3.5 text-fuchsia-300" />
+                  <span>Teroka Studio</span>
+                </>
+              )}
+            </button>
+          )}
+
+          <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-2xl bg-slate-950/75 border border-cyan-400/35 backdrop-blur-xl text-[11px] font-game font-bold shadow-[0_0_20px_rgba(34,211,238,0.18)]">
             {[
               { n: 1, label: 'Panggilan' },
               { n: 2, label: 'Laporan' },
@@ -875,10 +1144,10 @@ export function Mission4VoiceLabAdventure({
                   key={step.n}
                   className={`px-2 py-0.5 rounded-lg transition-colors ${
                     active
-                      ? 'bg-cyan-400 text-slate-950 font-black'
+                      ? 'bg-gradient-to-r from-cyan-400 to-teal-300 text-slate-950 font-black shadow-[0_0_12px_rgba(34,211,238,0.55)]'
                       : done
                       ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-400/40'
-                      : 'text-slate-400'
+                      : 'text-slate-300'
                   }`}
                 >
                   {step.n}. {step.label}
@@ -887,7 +1156,7 @@ export function Mission4VoiceLabAdventure({
             })}
           </div>
 
-          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-950/90 border border-slate-700/80 backdrop-blur-md">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-2xl bg-slate-950/75 border border-purple-400/40 backdrop-blur-xl shadow-lg">
             <button
               type="button"
               onClick={() => {
@@ -912,13 +1181,35 @@ export function Mission4VoiceLabAdventure({
         </div>
       </header>
 
-      {/* Main Centered Content Area */}
-      <main className="relative z-10 h-[calc(100vh-76px)] overflow-y-auto px-3 sm:px-6 py-4 flex items-center justify-center">
+      {/* Entrance Intro Banner & Skip Button */}
+      {entrancePhase === 'entering' && (
+        <div className="fixed inset-x-0 bottom-6 z-20 px-4 flex flex-col sm:flex-row items-center justify-center gap-3 pointer-events-none">
+          <div className="px-5 py-2.5 rounded-2xl bg-slate-950/75 border border-cyan-400/60 backdrop-blur-xl shadow-[0_0_30px_rgba(34,211,238,0.35)] flex items-center gap-2.5 pointer-events-auto">
+            <Sparkles className="w-4 h-4 text-fuchsia-300 animate-spin" />
+            <span className="font-game text-xs sm:text-sm font-black text-cyan-100 tracking-wide">
+              Ejen {user.fullName.split(' ')[0]} memasuki Studio Penyiaran Masa Hadapan...
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              playSFX('click');
+              handleSkipEntrance();
+            }}
+            className="pointer-events-auto px-4 py-2 rounded-2xl bg-slate-950/80 border border-fuchsia-400/60 text-fuchsia-200 hover:text-white hover:border-cyan-300 font-game text-xs font-black backdrop-blur-xl shadow-lg cursor-pointer"
+          >
+            Langkau Intro →
+          </button>
+        </div>
+      )}
+
+      {/* Main Centered Content Area (pointer-events-none so surrounding 3D studio can be dragged/inspected) */}
+      <main className="relative z-10 h-[calc(100vh-76px)] overflow-y-auto px-3 sm:px-6 py-4 flex items-center justify-center pointer-events-none">
         {/* ================================================================
             LANGKAH 1: PANGGILAN MAKMAL SUARA
            ================================================================ */}
-        {stage === 'call' && (
-          <div className="w-full max-w-4xl rounded-3xl bg-slate-950/88 border-2 border-cyan-400/60 shadow-[0_0_50px_rgba(34,211,238,0.28)] backdrop-blur-xl p-5 sm:p-7 space-y-5">
+        {entrancePhase === 'ready' && !exploreStudioMode && stage === 'call' && (
+          <div className="pointer-events-auto w-full max-w-4xl rounded-3xl bg-slate-950/72 border-2 border-cyan-400/65 shadow-[0_0_55px_rgba(34,211,238,0.32),0_0_30px_rgba(168,85,247,0.22)] backdrop-blur-xl p-5 sm:p-7 space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cyan-400/25 pb-4">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-400 to-emerald-400 flex items-center justify-center shadow-lg">
@@ -1035,8 +1326,8 @@ export function Mission4VoiceLabAdventure({
         {/* ================================================================
             LANGKAH 2: DENGAR LAPORAN PENCEMARAN (TAMAN HARMONI)
            ================================================================ */}
-        {stage === 'report' && (
-          <div className="w-full max-w-4xl rounded-3xl bg-slate-950/90 border-2 border-cyan-400/60 shadow-[0_0_50px_rgba(34,211,238,0.28)] backdrop-blur-xl p-5 sm:p-7 space-y-5 my-auto">
+        {entrancePhase === 'ready' && !exploreStudioMode && stage === 'report' && (
+          <div className="pointer-events-auto w-full max-w-4xl rounded-3xl bg-slate-950/74 border-2 border-cyan-400/65 shadow-[0_0_55px_rgba(34,211,238,0.32),0_0_30px_rgba(168,85,247,0.22)] backdrop-blur-xl p-5 sm:p-7 space-y-5 my-auto">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cyan-400/25 pb-3.5">
               <div>
                 <span className="text-[11px] font-game font-black uppercase tracking-widest text-amber-300">
@@ -1166,10 +1457,10 @@ export function Mission4VoiceLabAdventure({
         {/* ================================================================
             LANGKAH 3: MAKMAL PEMBINAAN HUJAH (4 KOMPONEN, TIADA RAKAMAN SUARA)
            ================================================================ */}
-        {stage === 'builder' && (
+        {entrancePhase === 'ready' && !exploreStudioMode && stage === 'builder' && (
           <form
             onSubmit={handleValidateAndTransfer}
-            className="w-full max-w-5xl rounded-3xl bg-slate-950/92 border-2 border-emerald-400/60 shadow-[0_0_50px_rgba(16,185,129,0.25)] backdrop-blur-xl p-4 sm:p-6 space-y-4 my-auto"
+            className="pointer-events-auto w-full max-w-5xl rounded-3xl bg-slate-950/78 border-2 border-emerald-400/65 shadow-[0_0_55px_rgba(16,185,129,0.28),0_0_30px_rgba(34,211,238,0.2)] backdrop-blur-xl p-4 sm:p-6 space-y-4 my-auto"
           >
             {/* Header */}
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
@@ -1326,8 +1617,8 @@ export function Mission4VoiceLabAdventure({
         {/* ================================================================
             LANGKAH 4: ANIMASI PEMINDAHAN HOLOGRAM & TAHNIAH KE MISI 5
            ================================================================ */}
-        {stage === 'transfer_success' && (
-          <div className="w-full max-w-4xl rounded-3xl bg-slate-950/92 border-2 border-emerald-400/70 shadow-[0_0_60px_rgba(16,185,129,0.35)] backdrop-blur-xl p-6 sm:p-8 space-y-6 text-center my-auto">
+        {entrancePhase === 'ready' && !exploreStudioMode && stage === 'transfer_success' && (
+          <div className="pointer-events-auto w-full max-w-4xl rounded-3xl bg-slate-950/76 border-2 border-emerald-400/70 shadow-[0_0_60px_rgba(16,185,129,0.35),0_0_30px_rgba(236,72,153,0.22)] backdrop-blur-xl p-6 sm:p-8 space-y-6 text-center my-auto">
             {transferPhase === 'sending' ? (
               <div className="py-10 space-y-6">
                 <div className="flex items-center justify-center gap-4 sm:gap-8">
@@ -1420,6 +1711,116 @@ export function Mission4VoiceLabAdventure({
           </div>
         )}
       </main>
+
+      {/* Studio Exploration Bar + Touch D-Pad + Camera Angle Presets (Non-intrusive) */}
+      {entrancePhase === 'ready' && (
+        <>
+          {/* Compact Left Touch / Mouse D-Pad (Shown prominently in Explore Mode, or on bottom-left corner) */}
+          <div
+            className={`fixed bottom-3 left-3 sm:bottom-4 sm:left-4 z-20 transition-opacity ${
+              exploreStudioMode ? 'flex opacity-100' : 'opacity-85 hover:opacity-100 hidden sm:flex'
+            } flex-col items-center gap-1 p-2 rounded-2xl bg-slate-950/70 border border-cyan-400/45 backdrop-blur-xl shadow-[0_0_25px_rgba(34,211,238,0.22)]`}
+          >
+            <span className="text-[9px] font-game font-black uppercase tracking-wider text-cyan-300">
+              Gerak Ejen
+            </span>
+            <button
+              type="button"
+              onPointerDown={() => setTouchDirection(0, 1)}
+              onPointerUp={() => setTouchDirection(0, 0)}
+              onPointerLeave={() => setTouchDirection(0, 0)}
+              onPointerCancel={() => setTouchDirection(0, 0)}
+              aria-label="Gerak Ke Hadapan"
+              className="w-8 h-8 rounded-xl bg-slate-900/90 border border-cyan-400/50 text-cyan-200 hover:bg-cyan-500/30 active:bg-cyan-400 active:text-slate-950 flex items-center justify-center cursor-pointer touch-none"
+            >
+              <ArrowUp className="w-4 h-4" />
+            </button>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onPointerDown={() => setTouchDirection(-1, 0)}
+                onPointerUp={() => setTouchDirection(0, 0)}
+                onPointerLeave={() => setTouchDirection(0, 0)}
+                onPointerCancel={() => setTouchDirection(0, 0)}
+                aria-label="Gerak Ke Kiri"
+                className="w-8 h-8 rounded-xl bg-slate-900/90 border border-cyan-400/50 text-cyan-200 hover:bg-cyan-500/30 active:bg-cyan-400 active:text-slate-950 flex items-center justify-center cursor-pointer touch-none"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onPointerDown={() => setTouchDirection(0, -1)}
+                onPointerUp={() => setTouchDirection(0, 0)}
+                onPointerLeave={() => setTouchDirection(0, 0)}
+                onPointerCancel={() => setTouchDirection(0, 0)}
+                aria-label="Gerak Ke Belakang"
+                className="w-8 h-8 rounded-xl bg-slate-900/90 border border-cyan-400/50 text-cyan-200 hover:bg-cyan-500/30 active:bg-cyan-400 active:text-slate-950 flex items-center justify-center cursor-pointer touch-none"
+              >
+                <ArrowDown className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onPointerDown={() => setTouchDirection(1, 0)}
+                onPointerUp={() => setTouchDirection(0, 0)}
+                onPointerLeave={() => setTouchDirection(0, 0)}
+                onPointerCancel={() => setTouchDirection(0, 0)}
+                aria-label="Gerak Ke Kanan"
+                className="w-8 h-8 rounded-xl bg-slate-900/90 border border-cyan-400/50 text-cyan-200 hover:bg-cyan-500/30 active:bg-cyan-400 active:text-slate-950 flex items-center justify-center cursor-pointer touch-none"
+              >
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+            <span className="hidden md:block text-[9px] text-slate-400 font-medium">
+              WASD / Anak Panah
+            </span>
+          </div>
+
+          {/* Camera Angle Switcher + Explore Mode Return Pill */}
+          <div className="fixed bottom-3 right-3 sm:bottom-4 sm:right-4 z-20 flex flex-wrap items-center justify-end gap-1.5">
+            {exploreStudioMode && (
+              <button
+                type="button"
+                onClick={() => {
+                  playSFX('click');
+                  setExploreStudioMode(false);
+                }}
+                className="px-3.5 py-2 rounded-2xl bg-gradient-to-r from-emerald-400 to-cyan-400 text-slate-950 font-game text-xs font-black flex items-center gap-1.5 shadow-[0_0_25px_rgba(52,211,153,0.45)] cursor-pointer"
+              >
+                <EyeOff className="w-3.5 h-3.5" />
+                <span>Kembali ke Panel Misi</span>
+              </button>
+            )}
+
+            <div className="flex items-center gap-1 p-1.5 rounded-2xl bg-slate-950/70 border border-purple-400/45 backdrop-blur-xl shadow-[0_0_25px_rgba(168,85,247,0.22)]">
+              <Camera className="w-3.5 h-3.5 text-fuchsia-300 ml-1 hidden sm:block" />
+              {(
+                [
+                  { id: 'follow', label: 'Ikut Ejen' },
+                  { id: 'wide', label: 'Luas Studio' },
+                  { id: 'console', label: 'Meja Audio' },
+                ] as { id: StudioCameraPreset; label: string }[]
+              ).map((cam) => (
+                <button
+                  key={cam.id}
+                  type="button"
+                  onClick={() => {
+                    playSFX('click');
+                    yawOffsetRef.current = 0;
+                    setCameraPreset(cam.id);
+                  }}
+                  className={`px-2.5 py-1 rounded-xl text-[10px] sm:text-[11px] font-game font-black cursor-pointer transition-colors ${
+                    cameraPreset === cam.id
+                      ? 'bg-gradient-to-r from-cyan-400 to-purple-400 text-slate-950'
+                      : 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
+                  }`}
+                >
+                  {cam.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
